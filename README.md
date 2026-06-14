@@ -1,6 +1,6 @@
 # mundial-2026-api
 
-API privada en Node.js/Express para exponer resultados del Mundial 2026 con caché, fallback entre fuentes gratuitas y despliegue compatible con Hostinger.
+API publica en Node.js/Express para exponer resultados del Mundial 2026 con cache, fallback entre fuentes gratuitas y proteccion por CORS restringido, validacion de origen y rate limit.
 
 ## Requisitos
 
@@ -19,15 +19,16 @@ PORT=3000
 CACHE_TTL_SECONDS=40
 FETCH_TIMEOUT_MS=15000
 ALLOWED_ORIGIN=https://culturarunner.com.co
-API_ACCESS_TOKEN=tu-token-seguro
+RATE_LIMIT_WINDOW_MS=60000
+RATE_LIMIT_MAX=60
 TZ=America/Bogota
 ```
 
 Notas:
 
-- `API_ACCESS_TOKEN` es obligatorio en produccion. Si falta, los endpoints protegidos responden `503` para evitar dejar la API abierta.
-- En desarrollo local, si no defines `API_ACCESS_TOKEN` y `NODE_ENV !== production`, el servidor usa el token de ejemplo `dev-local-token`.
-- En Hostinger debes configurar `API_ACCESS_TOKEN`, `ALLOWED_ORIGIN` y las demas variables desde el panel de entorno.
+- `ALLOWED_ORIGIN` acepta uno o varios origenes separados por coma.
+- En desarrollo, tambien se permiten `http://localhost:3000`, `http://localhost:5173` y `http://127.0.0.1:5500`.
+- `API_ACCESS_TOKEN` queda obsoleta y no se usa para bloquear endpoints publicos.
 
 ## Ejecutar localmente
 
@@ -38,24 +39,20 @@ npm start
 ## Endpoints
 
 - `GET /api/health` publico
-- `GET /api/results` protegido
-- `GET /api/results/live` protegido
-- `GET /api/results/finished` protegido
-- `GET /api/matches` protegido, alias de compatibilidad
-- `GET /api/matches/live` protegido, alias de compatibilidad
-- `GET /api/matches/finished` protegido, alias de compatibilidad
+- `GET /api/results` publico
+- `GET /api/results/live` publico
+- `GET /api/results/finished` publico
+- `GET /api/matches` publico, alias de compatibilidad
+- `GET /api/matches/live` publico, alias de compatibilidad
+- `GET /api/matches/finished` publico, alias de compatibilidad
 
-## Autenticacion
+## Proteccion aplicada
 
-Los endpoints protegidos aceptan cualquiera de estos headers:
-
-- `x-api-key: <API_ACCESS_TOKEN>`
-- `Authorization: Bearer <API_ACCESS_TOKEN>`
-
-Errores esperados:
-
-- sin token: `401 { "ok": false, "error": "Unauthorized" }`
-- token incorrecto: `403 { "ok": false, "error": "Forbidden" }`
+- CORS restringido a `ALLOWED_ORIGIN`
+- Validacion server-side de `Origin` y `Referer` para endpoints de resultados
+- Rate limit por IP
+- Cache compartido por TTL
+- Sin stack traces en respuestas
 
 ## Ejemplos curl
 
@@ -64,13 +61,15 @@ curl https://api.culturarunner.com.co/api/health
 ```
 
 ```bash
-curl https://api.culturarunner.com.co/api/results \
-  -H "x-api-key: $API_ACCESS_TOKEN"
+curl https://api.culturarunner.com.co/api/results
 ```
 
 ```bash
-curl https://api.culturarunner.com.co/api/results/live \
-  -H "Authorization: Bearer $API_ACCESS_TOKEN"
+curl https://api.culturarunner.com.co/api/results/live
+```
+
+```bash
+curl https://api.culturarunner.com.co/api/results/finished
 ```
 
 ## CORS
@@ -78,7 +77,23 @@ curl https://api.culturarunner.com.co/api/results/live \
 - Produccion: solo permite `ALLOWED_ORIGIN`, que por defecto es `https://culturarunner.com.co`
 - Desarrollo: tambien permite `http://localhost:3000`, `http://localhost:5173` y `http://127.0.0.1:5500`
 - Soporta preflight `OPTIONS`
-- Permite el header `x-api-key`
+- Solo permite el header `Content-Type`
+
+## Origin y Referer
+
+- Si una peticion browser-like envia `Origin`, debe coincidir con uno de los origenes permitidos.
+- Si no envia `Origin` pero si envia `Referer`, el `Referer` debe iniciar con un origen permitido.
+- Si no envia ni `Origin` ni `Referer`, se permite para monitoreo, curl y pruebas operativas.
+- Un origen no permitido responde `403 { "ok": false, "error": "Forbidden origin" }`
+
+## Rate limit
+
+- Se aplica a `/api/results*` y `/api/matches*`
+- Defaults:
+  - `RATE_LIMIT_WINDOW_MS=60000`
+  - `RATE_LIMIT_MAX=60`
+- Cuando una IP supera el limite, responde `429 { "ok": false, "error": "Too many requests" }`
+- El servidor usa `trust proxy` para funcionar correctamente detras de Hostinger
 
 ## Fuentes externas
 
@@ -142,7 +157,7 @@ La API prioriza la fuente principal para `score`, `status` y `elapsed` cuando es
 ## Despliegue en Hostinger
 
 1. Sube este repositorio.
-2. Configura las variables de entorno, especialmente `API_ACCESS_TOKEN`.
+2. Configura las variables de entorno, especialmente `ALLOWED_ORIGIN`, `RATE_LIMIT_WINDOW_MS` y `RATE_LIMIT_MAX`.
 3. Verifica que el comando de arranque sea `npm start`.
 4. Comprueba `GET /api/health`.
-5. Prueba los endpoints protegidos con `x-api-key` o `Authorization: Bearer`.
+5. Prueba `/api/results` desde el frontend y con curl sin headers especiales.

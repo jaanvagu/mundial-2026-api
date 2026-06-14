@@ -1,5 +1,6 @@
 const express = require("express");
 const cors = require("cors");
+const rateLimit = require("express-rate-limit");
 const fs = require("fs");
 const path = require("path");
 
@@ -10,17 +11,24 @@ const PORT = Number(process.env.PORT) || 3000;
 const CACHE_TTL_SECONDS = Number(process.env.CACHE_TTL_SECONDS) || 40;
 const FETCH_TIMEOUT_MS = Number(process.env.FETCH_TIMEOUT_MS) || 15000;
 const DEFAULT_ALLOWED_ORIGIN = "https://culturarunner.com.co";
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || DEFAULT_ALLOWED_ORIGIN;
-const IS_PRODUCTION = process.env.NODE_ENV === "production";
-const DEV_FALLBACK_TOKEN = "dev-local-token";
-const API_ACCESS_TOKEN = process.env.API_ACCESS_TOKEN || (!IS_PRODUCTION ? DEV_FALLBACK_TOKEN : "");
+const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS) || 60000;
+const RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX) || 60;
 const CACHE_FILE_PATH = path.join(__dirname, "data", "cache", "results-cache.json");
 const ALLOWED_DEV_ORIGINS = [
   "http://localhost:3000",
   "http://localhost:5173",
   "http://127.0.0.1:5500"
 ];
-const ALLOWED_ORIGINS = new Set([ALLOWED_ORIGIN, ...ALLOWED_DEV_ORIGINS]);
+const configuredOrigins = parseAllowedOrigins(process.env.ALLOWED_ORIGIN || DEFAULT_ALLOWED_ORIGIN);
+const ALLOWED_ORIGINS = new Set([...configuredOrigins, ...ALLOWED_DEV_ORIGINS]);
+const PUBLIC_RESULTS_PATHS = [
+  "/api/results",
+  "/api/results/live",
+  "/api/results/finished",
+  "/api/matches",
+  "/api/matches/live",
+  "/api/matches/finished"
+];
 
 const cacheState = {
   data: null,
@@ -28,11 +36,27 @@ const cacheState = {
   refreshPromise: null
 };
 
+const resultsRateLimiter = rateLimit({
+  windowMs: RATE_LIMIT_WINDOW_MS,
+  limit: RATE_LIMIT_MAX,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    ok: false,
+    error: "Too many requests"
+  },
+  handler: (_req, res, _next, options) => {
+    res.status(options.statusCode).json(options.message);
+  }
+});
+
 loadPersistedCache();
 
+app.set("trust proxy", 1);
 app.use(express.json());
 app.use(cors(buildCorsOptions));
 app.options(/.*/, cors(buildCorsOptions));
+app.use(PUBLIC_RESULTS_PATHS, resultsRateLimiter, validatePublicOrigin);
 
 app.get("/api/health", (_req, res) => {
   res.json({
@@ -47,13 +71,13 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
-app.get("/api/results", requireApiKey, createResultsHandler(() => true));
-app.get("/api/results/live", requireApiKey, createResultsHandler((match) => match.status === "LIVE" || match.status === "HALFTIME"));
-app.get("/api/results/finished", requireApiKey, createResultsHandler((match) => match.status === "FINISHED"));
+app.get("/api/results", createResultsHandler(() => true));
+app.get("/api/results/live", createResultsHandler((match) => match.status === "LIVE" || match.status === "HALFTIME"));
+app.get("/api/results/finished", createResultsHandler((match) => match.status === "FINISHED"));
 
-app.get("/api/matches", requireApiKey, createResultsHandler(() => true));
-app.get("/api/matches/live", requireApiKey, createResultsHandler((match) => match.status === "LIVE" || match.status === "HALFTIME"));
-app.get("/api/matches/finished", requireApiKey, createResultsHandler((match) => match.status === "FINISHED"));
+app.get("/api/matches", createResultsHandler(() => true));
+app.get("/api/matches/live", createResultsHandler((match) => match.status === "LIVE" || match.status === "HALFTIME"));
+app.get("/api/matches/finished", createResultsHandler((match) => match.status === "FINISHED"));
 
 app.use((err, _req, res, _next) => {
   console.error("Unhandled error:", err && err.message ? err.message : err);
@@ -90,39 +114,32 @@ function createCorsOptions(originAllowed) {
   return {
     origin: originAllowed,
     methods: ["GET", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "x-api-key"],
+    allowedHeaders: ["Content-Type"],
     optionsSuccessStatus: 204
   };
 }
 
-function requireApiKey(req, res, next) {
-  if (!API_ACCESS_TOKEN) {
-    res.status(503).json({
-      ok: false,
-      error: "Service unavailable: API_ACCESS_TOKEN is not configured"
-    });
+function validatePublicOrigin(req, res, next) {
+  const origin = req.header("Origin");
+  const referer = req.header("Referer");
+
+  if (!origin && !referer) {
+    next();
     return;
   }
 
-  const apiKeyHeader = req.header("x-api-key");
-  const authorizationHeader = req.header("Authorization");
-  const bearerToken = authorizationHeader && authorizationHeader.startsWith("Bearer ")
-    ? authorizationHeader.slice(7).trim()
-    : "";
-  const providedToken = apiKeyHeader || bearerToken;
-
-  if (!providedToken) {
-    res.status(401).json({
-      ok: false,
-      error: "Unauthorized"
-    });
-    return;
-  }
-
-  if (providedToken !== API_ACCESS_TOKEN) {
+  if (origin && !ALLOWED_ORIGINS.has(origin)) {
     res.status(403).json({
       ok: false,
-      error: "Forbidden"
+      error: "Forbidden origin"
+    });
+    return;
+  }
+
+  if (!origin && referer && !refererMatchesAllowedOrigin(referer)) {
+    res.status(403).json({
+      ok: false,
+      error: "Forbidden origin"
     });
     return;
   }
@@ -782,6 +799,17 @@ function coalesce(...values) {
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
+}
+
+function parseAllowedOrigins(value) {
+  return String(value)
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+}
+
+function refererMatchesAllowedOrigin(referer) {
+  return Array.from(ALLOWED_ORIGINS).some((origin) => referer.startsWith(origin));
 }
 
 function createHttpError(statusCode, publicMessage, internalMessage) {
