@@ -13,6 +13,7 @@ const FETCH_TIMEOUT_MS = Number(process.env.FETCH_TIMEOUT_MS) || 15000;
 const DEFAULT_ALLOWED_ORIGIN = "https://culturarunner.com.co";
 const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS) || 60000;
 const RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX) || 60;
+const ALLOW_ALL_ORIGINS = String(process.env.ALLOW_ALL_ORIGINS).toLowerCase() === "true";
 const CACHE_FILE_PATH = path.join(__dirname, "data", "cache", "results-cache.json");
 const ALLOWED_DEV_ORIGINS = [
   "http://localhost:3000",
@@ -96,10 +97,20 @@ app.use((_req, res) => {
 
 app.listen(PORT, () => {
   console.log(`${SERVICE_NAME} listening on port ${PORT}`);
+  if (ALLOW_ALL_ORIGINS) {
+    console.warn("WARNING: ALLOW_ALL_ORIGINS is enabled. CORS and origin checks are relaxed for debugging.");
+  } else {
+    console.log("CORS restricted mode enabled.");
+  }
 });
 
 function buildCorsOptions(req, callback) {
   const origin = req.header("Origin");
+
+  if (ALLOW_ALL_ORIGINS) {
+    callback(null, createCorsOptions(origin || true));
+    return;
+  }
 
   if (!origin) {
     callback(null, createCorsOptions(true));
@@ -110,9 +121,9 @@ function buildCorsOptions(req, callback) {
   callback(null, createCorsOptions(allowed));
 }
 
-function createCorsOptions(originAllowed) {
+function createCorsOptions(originValue) {
   return {
-    origin: originAllowed,
+    origin: originValue,
     methods: ["GET", "OPTIONS"],
     allowedHeaders: ["Content-Type"],
     optionsSuccessStatus: 204
@@ -120,6 +131,11 @@ function createCorsOptions(originAllowed) {
 }
 
 function validatePublicOrigin(req, res, next) {
+  if (ALLOW_ALL_ORIGINS) {
+    next();
+    return;
+  }
+
   const origin = req.header("Origin");
   const referer = req.header("Referer");
 

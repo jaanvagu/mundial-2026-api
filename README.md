@@ -21,6 +21,7 @@ FETCH_TIMEOUT_MS=15000
 ALLOWED_ORIGIN=https://culturarunner.com.co
 RATE_LIMIT_WINDOW_MS=60000
 RATE_LIMIT_MAX=60
+ALLOW_ALL_ORIGINS=false
 TZ=America/Bogota
 ```
 
@@ -29,6 +30,7 @@ Notas:
 - `ALLOWED_ORIGIN` acepta uno o varios origenes separados por coma.
 - En desarrollo, tambien se permiten `http://localhost:3000`, `http://localhost:5173` y `http://127.0.0.1:5500`.
 - `API_ACCESS_TOKEN` queda obsoleta y no se usa para bloquear endpoints publicos.
+- `ALLOW_ALL_ORIGINS=true` relaja temporalmente CORS y la validacion de `Origin`/`Referer` solo para debugging. Debe volver a `false` o eliminarse despues de probar.
 
 ## Ejecutar localmente
 
@@ -78,6 +80,7 @@ curl https://api.culturarunner.com.co/api/results/finished
 - Desarrollo: tambien permite `http://localhost:3000`, `http://localhost:5173` y `http://127.0.0.1:5500`
 - Soporta preflight `OPTIONS`
 - Solo permite el header `Content-Type`
+- Si `ALLOW_ALL_ORIGINS=true`, responde `Access-Control-Allow-Origin` con el `Origin` recibido para facilitar pruebas temporales desde local u otros origenes
 
 ## Origin y Referer
 
@@ -85,6 +88,7 @@ curl https://api.culturarunner.com.co/api/results/finished
 - Si no envia `Origin` pero si envia `Referer`, el `Referer` debe iniciar con un origen permitido.
 - Si no envia ni `Origin` ni `Referer`, se permite para monitoreo, curl y pruebas operativas.
 - Un origen no permitido responde `403 { "ok": false, "error": "Forbidden origin" }`
+- Si `ALLOW_ALL_ORIGINS=true`, esta validacion se desactiva temporalmente para debugging.
 
 ## Rate limit
 
@@ -161,3 +165,19 @@ La API prioriza la fuente principal para `score`, `status` y `elapsed` cuando es
 3. Verifica que el comando de arranque sea `npm start`.
 4. Comprueba `GET /api/health`.
 5. Prueba `/api/results` desde el frontend y con curl sin headers especiales.
+
+## Debug temporal
+
+Para diagnosticar problemas de frontend desde local, puedes activar temporalmente:
+
+```bash
+ALLOW_ALL_ORIGINS=true
+```
+
+Esto:
+
+- relaja CORS para cualquier `Origin`
+- desactiva la validacion estricta de `Origin` y `Referer`
+- mantiene activos el rate limit y la cache
+
+No se recomienda como configuracion permanente de produccion.
