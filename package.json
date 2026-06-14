@@ -1,0 +1,16 @@
+{
+  "name": "mundial-2026-api",
+  "version": "1.0.0",
+  "description": "Minimal Node.js API bootstrap for Hostinger deployment.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^5.1.0"
+  }
+}
