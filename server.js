@@ -370,14 +370,17 @@ function normalizeWorldCupMatch(item, generatedAt) {
     item.kickoff_utc,
     item.kickoff,
     item.date_time,
-    item.utc_date
+    item.utc_date,
+    item.local_date
   );
   const statusRaw = firstString(
     item.status,
     item.match_status,
     item.state,
     item.live_status,
-    item.stage_status
+    item.stage_status,
+    item.time_elapsed,
+    item.finished
   );
   const explicitElapsed = parseMinuteValue(
     item.time_elapsed,
@@ -392,11 +395,11 @@ function normalizeWorldCupMatch(item, generatedAt) {
 
   return {
     id: stableId,
-    match_number: toNumberOrNull(item.num, item.match_number, item.matchday_number, item.id_match),
+    match_number: toNumberOrNull(item.num, item.match_number, item.matchday_number, item.id_match, item.id),
     home_code: firstString(item.home, item.home_code, item.home_team_code, item.home_short),
     away_code: firstString(item.away, item.away_code, item.away_team_code, item.away_short),
-    home_name: firstString(item.home_name, item.homeTeam, item.home_team, item.team_home_name),
-    away_name: firstString(item.away_name, item.awayTeam, item.away_team, item.team_away_name),
+    home_name: firstString(item.home_name, item.homeTeam, item.home_team, item.team_home_name, item.home_team_name_en),
+    away_name: firstString(item.away_name, item.awayTeam, item.away_team, item.team_away_name, item.away_team_name_en),
     score_home: scores.home,
     score_away: scores.away,
     status,
@@ -558,15 +561,23 @@ function normalizeStatus(statusRaw, fallbackStatus) {
     return "LIVE";
   }
 
+  if (["TRUE", "FINISHED_TRUE"].includes(compactValue)) {
+    return "FINISHED";
+  }
+
+  if (["FALSE", "LIVE_FALSE"].includes(compactValue) && fallbackStatus) {
+    return fallbackStatus;
+  }
+
   if (["HT", "HALF_TIME", "HALFTIME", "BREAK"].includes(compactValue)) {
     return "HALFTIME";
   }
 
-  if (["FINISHED", "FT", "FULL_TIME", "ENDED", "COMPLETED"].includes(compactValue)) {
+  if (["FINISHED", "FT", "FULL_TIME", "ENDED", "COMPLETED", "FINISHED", "FINISH"].includes(compactValue)) {
     return "FINISHED";
   }
 
-  if (["SCHEDULED", "NS", "NOT_STARTED", "UPCOMING", "TIMED"].includes(compactValue)) {
+  if (["SCHEDULED", "NS", "NOT_STARTED", "NOTSTARTED", "UPCOMING", "TIMED"].includes(compactValue)) {
     return "SCHEDULED";
   }
 
@@ -574,24 +585,38 @@ function normalizeStatus(statusRaw, fallbackStatus) {
 }
 
 function mergeSourceResults(primaryMatches, fallbackMatches, generatedAt) {
-  const fallbackMap = new Map();
+  const fallbackMapById = new Map();
+  const fallbackMapByMatchNumber = new Map();
+  const fallbackMapByTeams = new Map();
 
   for (const match of fallbackMatches) {
-    fallbackMap.set(match.id, match);
+    fallbackMapById.set(match.id, match);
+    if (match.match_number != null) {
+      fallbackMapByMatchNumber.set(match.match_number, match);
+    }
+    const teamSignature = buildTeamSignature(match);
+    if (teamSignature) {
+      fallbackMapByTeams.set(teamSignature, match);
+    }
   }
 
   const merged = [];
-  const seenIds = new Set();
+  const seenFallbackIds = new Set();
 
   for (const primary of primaryMatches) {
-    const fallback = fallbackMap.get(primary.id);
+    const teamSignature = buildTeamSignature(primary);
+    const fallback = (teamSignature ? fallbackMapByTeams.get(teamSignature) : null)
+      || fallbackMapById.get(primary.id)
+      || (primary.match_number != null ? fallbackMapByMatchNumber.get(primary.match_number) : null);
     const resolved = mergeMatch(primary, fallback, generatedAt);
     merged.push(resolved);
-    seenIds.add(resolved.id);
+    if (fallback) {
+      seenFallbackIds.add(fallback.id);
+    }
   }
 
   for (const fallback of fallbackMatches) {
-    if (!seenIds.has(fallback.id)) {
+    if (!seenFallbackIds.has(fallback.id)) {
       merged.push(mergeMatch(null, fallback, generatedAt));
     }
   }
@@ -602,8 +627,8 @@ function mergeSourceResults(primaryMatches, fallbackMatches, generatedAt) {
 function mergeMatch(primary, fallback, generatedAt) {
   const base = primary || fallback;
   const resolved = {
-    id: base.id,
-    match_number: coalesce(primary && primary.match_number, fallback && fallback.match_number),
+    id: coalesce(fallback && fallback.id, primary && primary.id, base.id),
+    match_number: coalesce(fallback && fallback.match_number, primary && primary.match_number),
     home_code: coalesce(primary && primary.home_code, fallback && fallback.home_code),
     away_code: coalesce(primary && primary.away_code, fallback && fallback.away_code),
     home_name: coalesce(primary && primary.home_name, fallback && fallback.home_name),
@@ -669,6 +694,17 @@ function chooseScore(primaryValue, fallbackValue) {
 }
 
 function buildStableId(item, kickoffIso) {
+  const home = firstString(item.home, item.home_code, item.home_name, item.home_team_name_en, "home");
+  const away = firstString(item.away, item.away_code, item.away_name, item.away_team_name_en, "away");
+  const kickoff = kickoffIso || firstString(item.date, item.time_utc, item.local_date, "unknown-time");
+
+  if (home !== "home" && away !== "away") {
+    return `${home}-${away}-${kickoff}`
+      .toLowerCase()
+      .replace(/[^\w-]+/g, "-")
+      .replace(/-+/g, "-");
+  }
+
   const fromItem = firstString(
     item.slug,
     item.id,
@@ -681,10 +717,7 @@ function buildStableId(item, kickoffIso) {
     return String(fromItem);
   }
 
-  const home = firstString(item.home, item.home_code, item.home_name, "home");
-  const away = firstString(item.away, item.away_code, item.away_name, "away");
-  const kickoff = kickoffIso || firstString(item.date, item.time_utc, "unknown-time");
-  return `${home}-${away}-${kickoff}`.toLowerCase().replace(/\s+/g, "-");
+  return `${home}-${away}-${kickoff}`.toLowerCase().replace(/[^\w-]+/g, "-").replace(/-+/g, "-");
 }
 
 function sortMatches(left, right) {
@@ -826,6 +859,31 @@ function parseAllowedOrigins(value) {
 
 function refererMatchesAllowedOrigin(referer) {
   return Array.from(ALLOWED_ORIGINS).some((origin) => referer.startsWith(origin));
+}
+
+function buildTeamSignature(match) {
+  const home = normalizeTeamToken(match.home_name || match.home_code);
+  const away = normalizeTeamToken(match.away_name || match.away_code);
+
+  if (!home || !away) {
+    return null;
+  }
+
+  return `${home}__${away}`;
+}
+
+function normalizeTeamToken(value) {
+  if (!value || typeof value !== "string") {
+    return null;
+  }
+
+  return value
+    .normalize("NFKD")
+    .replace(/[^\w\s-]/g, "")
+    .replace(/\band\b/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
 }
 
 function createHttpError(statusCode, publicMessage, internalMessage) {
