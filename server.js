@@ -14,6 +14,9 @@ const DEFAULT_ALLOWED_ORIGIN = "https://culturarunner.com.co";
 const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS) || 60000;
 const RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX) || 60;
 const ALLOW_ALL_ORIGINS = String(process.env.ALLOW_ALL_ORIGINS).toLowerCase() === "true";
+const ESPN_ENABLED = process.env.ESPN_ENABLED !== "false";
+const ESPN_SCOREBOARD_URL = process.env.ESPN_SCOREBOARD_URL || "https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard";
+const ESPN_WORLD_CUP_LEAGUE_UID_TOKEN = process.env.ESPN_WORLD_CUP_LEAGUE_UID_TOKEN || "~l:606~";
 const CACHE_FILE_PATH = path.join(__dirname, "data", "cache", "results-cache.json");
 const ALLOWED_DEV_ORIGINS = [
   "http://localhost:3000",
@@ -213,12 +216,15 @@ async function refreshResults() {
   ]);
 
   const mergedResults = mergeSourceResults(worldcupSource.matches, whenIsKickoffSource.matches, generatedAt);
+  const espnSource = await fetchEspnRelevantMatches(mergedResults, generatedAt);
+  const enrichedResults = enrichMatchesWithEspn(mergedResults, espnSource.matches, generatedAt);
   const sourcesMeta = {
     worldcup26: worldcupSource.meta,
-    wheniskickoff: whenIsKickoffSource.meta
+    wheniskickoff: whenIsKickoffSource.meta,
+    espn: espnSource.meta
   };
 
-  if (mergedResults.length === 0) {
+  if (enrichedResults.length === 0) {
     if (cacheState.data) {
       return clonePayload(cacheState.data, {
         served_from_cache: true,
@@ -231,6 +237,7 @@ async function refreshResults() {
     throw createHttpError(502, "Bad Gateway", "No results available from upstream sources");
   }
 
+  const publicResults = enrichedResults.map(toPublicMatch);
   const payload = {
     meta: {
       generated_at: generatedAt,
@@ -240,7 +247,7 @@ async function refreshResults() {
       refresh_interval_seconds: CACHE_TTL_SECONDS,
       sources: sourcesMeta
     },
-    results: mergedResults
+    results: publicResults
   };
 
   cacheState.data = payload;
@@ -308,6 +315,51 @@ async function fetchWhenIsKickoff(generatedAt) {
       }
     };
   }
+}
+
+async function fetchEspnRelevantMatches(baseMatches, generatedAt) {
+  if (!ESPN_ENABLED) {
+    return {
+      matches: [],
+      meta: {
+        ok: true,
+        count: 0,
+        error: null
+      }
+    };
+  }
+
+  const relevantDates = getRelevantEspnDates(baseMatches, generatedAt);
+
+  try {
+    const payloads = await Promise.all(relevantDates.map((date) => fetchEspnScoreboardByDate(date)));
+    const matches = payloads.flatMap((payload) => normalizeEspnMatches(payload, generatedAt)).filter(Boolean);
+
+    return {
+      matches,
+      meta: {
+        ok: true,
+        count: matches.length,
+        error: null
+      }
+    };
+  } catch (error) {
+    return {
+      matches: [],
+      meta: {
+        ok: false,
+        count: 0,
+        error: sanitizeUpstreamError(error)
+      }
+    };
+  }
+}
+
+async function fetchEspnScoreboardByDate(date) {
+  const url = new URL(ESPN_SCOREBOARD_URL);
+  url.searchParams.set("dates", date);
+  url.searchParams.set("limit", "200");
+  return fetchJsonWithTimeout(url.toString());
 }
 
 async function fetchJsonWithTimeout(url) {
@@ -406,7 +458,8 @@ function normalizeWorldCupMatch(item, generatedAt) {
     status_raw: statusRaw || null,
     elapsed: explicitElapsed ?? estimated.elapsed,
     estimated_elapsed: explicitElapsed != null ? false : estimated.estimated_elapsed,
-    last_seen_at: generatedAt
+    last_seen_at: generatedAt,
+    kickoff_utc: kickoff || null
   };
 }
 
@@ -440,6 +493,61 @@ function normalizeWhenIsKickoffMatch(item, generatedAt) {
     status_raw: statusRaw || null,
     elapsed: explicitElapsed ?? estimated.elapsed,
     estimated_elapsed: explicitElapsed != null ? false : estimated.estimated_elapsed,
+    last_seen_at: generatedAt,
+    kickoff_utc: kickoff || null
+  };
+}
+
+function normalizeEspnMatches(payload, generatedAt) {
+  const events = Array.isArray(payload && payload.events) ? payload.events : [];
+
+  return events
+    .filter(isEspnWorldCupEvent)
+    .map((event) => normalizeEspnEvent(event, generatedAt))
+    .filter(Boolean);
+}
+
+function isEspnWorldCupEvent(event) {
+  return String(event && event.uid ? event.uid : "").includes(ESPN_WORLD_CUP_LEAGUE_UID_TOKEN);
+}
+
+function normalizeEspnEvent(event, generatedAt) {
+  if (!event || typeof event !== "object") {
+    return null;
+  }
+
+  const competition = Array.isArray(event.competitions) ? event.competitions[0] : null;
+  const competitors = Array.isArray(competition && competition.competitors) ? competition.competitors : [];
+  const home = competitors.find((competitor) => competitor.homeAway === "home") || competitors[0];
+  const away = competitors.find((competitor) => competitor.homeAway === "away") || competitors[1];
+
+  if (!home || !away) {
+    return null;
+  }
+
+  const competitionStatus = competition && competition.status ? competition.status : event.status || {};
+  const statusType = competitionStatus.type || {};
+  const displayClock = firstString(competitionStatus.displayClock, statusType.shortDetail, statusType.detail);
+  const parsedClock = parseEspnDisplayClock(displayClock);
+  const normalizedStatus = normalizeEspnStatus(statusType, displayClock);
+
+  return {
+    espn_id: firstString(event.id, competition && competition.id),
+    uid: firstString(event.uid, competition && competition.uid),
+    kickoff_utc: firstString(event.date, competition && competition.date, competition && competition.startDate),
+    home_name: firstString(home.team && home.team.displayName, home.team && home.team.name),
+    away_name: firstString(away.team && away.team.displayName, away.team && away.team.name),
+    home_code: firstString(home.team && home.team.abbreviation),
+    away_code: firstString(away.team && away.team.abbreviation),
+    score_home: toNumberOrNull(home.score),
+    score_away: toNumberOrNull(away.score),
+    status: normalizedStatus.status,
+    status_raw: firstString(statusType.detail, statusType.description, statusType.name, competitionStatus.displayClock),
+    elapsed: normalizedStatus.elapsedOverride != null ? normalizedStatus.elapsedOverride : parsedClock,
+    estimated_elapsed: normalizedStatus.status === "LIVE" && parsedClock != null ? false : normalizedStatus.estimated_elapsed,
+    display_clock: displayClock || null,
+    clock_source: "espn",
+    period: toNumberOrNull(competitionStatus.period),
     last_seen_at: generatedAt
   };
 }
@@ -639,7 +747,8 @@ function mergeMatch(primary, fallback, generatedAt) {
     status_raw: coalesce(primary && primary.status_raw, fallback && fallback.status_raw),
     elapsed: chooseElapsed(primary, fallback),
     estimated_elapsed: chooseEstimatedElapsed(primary, fallback),
-    last_seen_at: generatedAt
+    last_seen_at: generatedAt,
+    kickoff_utc: coalesce(fallback && fallback.kickoff_utc, primary && primary.kickoff_utc)
   };
 
   if (!resolved.status) {
@@ -647,6 +756,90 @@ function mergeMatch(primary, fallback, generatedAt) {
   }
 
   return resolved;
+}
+
+function enrichMatchesWithEspn(matches, espnMatches, generatedAt) {
+  if (!Array.isArray(espnMatches) || espnMatches.length === 0) {
+    return matches;
+  }
+
+  const espnByTeam = new Map();
+  const espnByCode = new Map();
+
+  for (const espnMatch of espnMatches) {
+    const teamKey = buildTeamSignature(espnMatch);
+    if (teamKey) {
+      espnByTeam.set(teamKey, espnMatch);
+    }
+
+    const codeKey = buildCodeSignature(espnMatch);
+    if (codeKey) {
+      espnByCode.set(codeKey, espnMatch);
+    }
+  }
+
+  return matches.map((match) => {
+    const espnMatch = findMatchingEspnMatch(match, espnByTeam, espnByCode);
+    if (!espnMatch) {
+      return match;
+    }
+
+    const orientation = getEspnOrientation(match, espnMatch);
+    const espnScoreHome = orientation === "reversed" ? espnMatch.score_away : espnMatch.score_home;
+    const espnScoreAway = orientation === "reversed" ? espnMatch.score_home : espnMatch.score_away;
+    const hasUsableScores = espnScoreHome != null && espnScoreAway != null;
+    const hasUsableClock = espnMatch.elapsed != null;
+    const authoritativeStatus = espnMatch.status === "LIVE" || espnMatch.status === "HALFTIME" || espnMatch.status === "FINISHED";
+
+    if (!authoritativeStatus && !hasUsableScores && !hasUsableClock) {
+      return match;
+    }
+
+    return {
+      ...match,
+      score_home: hasUsableScores ? espnScoreHome : match.score_home,
+      score_away: hasUsableScores ? espnScoreAway : match.score_away,
+      status: authoritativeStatus ? espnMatch.status : match.status,
+      status_raw: authoritativeStatus ? espnMatch.status_raw : match.status_raw,
+      elapsed: hasUsableClock ? espnMatch.elapsed : match.elapsed,
+      estimated_elapsed: hasUsableClock ? false : match.estimated_elapsed,
+      last_seen_at: generatedAt,
+      espn_id: espnMatch.espn_id || null,
+      clock_source: hasUsableClock ? "espn" : match.clock_source,
+      display_clock: espnMatch.display_clock || match.display_clock || null
+    };
+  });
+}
+
+function findMatchingEspnMatch(match, espnByTeam, espnByCode) {
+  const teamKey = buildTeamSignature(match);
+  const codeKey = buildCodeSignature(match);
+  const reversedTeamKey = buildReversedTeamSignature(match);
+  const reversedCodeKey = buildReversedCodeSignature(match);
+
+  return (teamKey ? espnByTeam.get(teamKey) : null)
+    || (reversedTeamKey ? espnByTeam.get(reversedTeamKey) : null)
+    || (codeKey ? espnByCode.get(codeKey) : null)
+    || (reversedCodeKey ? espnByCode.get(reversedCodeKey) : null)
+    || null;
+}
+
+function getEspnOrientation(match, espnMatch) {
+  const sameHome = teamTokenEquals(match.home_name, espnMatch.home_name) || teamTokenEquals(match.home_code, espnMatch.home_code);
+  const sameAway = teamTokenEquals(match.away_name, espnMatch.away_name) || teamTokenEquals(match.away_code, espnMatch.away_code);
+
+  if (sameHome && sameAway) {
+    return "same";
+  }
+
+  const reversedHome = teamTokenEquals(match.home_name, espnMatch.away_name) || teamTokenEquals(match.home_code, espnMatch.away_code);
+  const reversedAway = teamTokenEquals(match.away_name, espnMatch.home_name) || teamTokenEquals(match.away_code, espnMatch.home_code);
+
+  if (reversedHome && reversedAway) {
+    return "reversed";
+  }
+
+  return "same";
 }
 
 function chooseStatus(primaryStatus, fallbackStatus) {
@@ -691,6 +884,115 @@ function chooseScore(primaryValue, fallbackValue) {
   }
 
   return null;
+}
+
+function normalizeEspnStatus(statusType, displayClock) {
+  const state = firstString(statusType && statusType.state);
+  const description = firstString(statusType && statusType.description, statusType && statusType.name, displayClock);
+  const normalizedState = state ? state.toLowerCase() : "";
+  const normalizedDescription = description ? description.toLowerCase() : "";
+
+  if (normalizedState === "pre" || normalizedDescription.includes("scheduled")) {
+    return {
+      status: "SCHEDULED",
+      elapsedOverride: null,
+      estimated_elapsed: null
+    };
+  }
+
+  if (normalizedDescription.includes("half") || String(displayClock || "").toUpperCase() === "HT") {
+    return {
+      status: "HALFTIME",
+      elapsedOverride: 45,
+      estimated_elapsed: false
+    };
+  }
+
+  if (normalizedState === "in") {
+    return {
+      status: "LIVE",
+      elapsedOverride: null,
+      estimated_elapsed: false
+    };
+  }
+
+  if (normalizedState === "post" || statusType.completed || normalizedDescription.includes("final") || String(displayClock || "").toUpperCase() === "FT") {
+    return {
+      status: "FINISHED",
+      elapsedOverride: 90,
+      estimated_elapsed: false
+    };
+  }
+
+  return {
+    status: "UNKNOWN",
+    elapsedOverride: null,
+    estimated_elapsed: null
+  };
+}
+
+function parseEspnDisplayClock(value) {
+  if (!value || typeof value !== "string") {
+    return null;
+  }
+
+  const compact = value.trim().toUpperCase();
+  if (compact === "HT") {
+    return 45;
+  }
+
+  if (compact === "FT") {
+    return 90;
+  }
+
+  const normalized = compact.replace(/\s+/g, "");
+  const plusMatch = normalized.match(/^(\d{1,3})'?[\+](\d{1,2})'?$/);
+  if (plusMatch) {
+    return Number(plusMatch[1]) + Number(plusMatch[2]);
+  }
+
+  const plainMatch = normalized.match(/^(\d{1,3})'?$/);
+  if (plainMatch) {
+    return Number(plainMatch[1]);
+  }
+
+  return null;
+}
+
+function getRelevantEspnDates(matches, generatedAt) {
+  const nowMs = Date.parse(generatedAt);
+  const dates = new Set([formatUtcDateYYYYMMDD(nowMs)]);
+
+  for (const match of matches) {
+    const kickoffMs = match.kickoff_utc ? Date.parse(match.kickoff_utc) : Number.NaN;
+    if (Number.isNaN(kickoffMs)) {
+      continue;
+    }
+
+    const diffMinutes = (nowMs - kickoffMs) / 60000;
+    if (diffMinutes >= -15 && diffMinutes <= 140) {
+      dates.add(formatUtcDateYYYYMMDD(kickoffMs));
+    }
+  }
+
+  return Array.from(dates).sort();
+}
+
+function formatUtcDateYYYYMMDD(value) {
+  const date = new Date(value);
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  return `${year}${month}${day}`;
+}
+
+function toPublicMatch(match) {
+  const {
+    kickoff_utc: _kickoffUtc,
+    ...publicMatch
+  } = match;
+
+  return publicMatch;
 }
 
 function buildStableId(item, kickoffIso) {
@@ -872,18 +1174,71 @@ function buildTeamSignature(match) {
   return `${home}__${away}`;
 }
 
+function buildCodeSignature(match) {
+  const home = normalizeTeamToken(match.home_code);
+  const away = normalizeTeamToken(match.away_code);
+
+  if (!home || !away) {
+    return null;
+  }
+
+  return `${home}__${away}`;
+}
+
+function buildReversedTeamSignature(match) {
+  const home = normalizeTeamToken(match.away_name || match.away_code);
+  const away = normalizeTeamToken(match.home_name || match.home_code);
+
+  if (!home || !away) {
+    return null;
+  }
+
+  return `${home}__${away}`;
+}
+
+function buildReversedCodeSignature(match) {
+  const home = normalizeTeamToken(match.away_code);
+  const away = normalizeTeamToken(match.home_code);
+
+  if (!home || !away) {
+    return null;
+  }
+
+  return `${home}__${away}`;
+}
+
 function normalizeTeamToken(value) {
   if (!value || typeof value !== "string") {
     return null;
   }
 
-  return value
+  const canonical = applyTeamAlias(value);
+
+  return canonical
     .normalize("NFKD")
     .replace(/[^\w\s-]/g, "")
     .replace(/\band\b/g, " ")
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase();
+}
+
+function applyTeamAlias(value) {
+  const normalized = String(value).trim().toLowerCase();
+  const aliases = new Map([
+    ["usa", "united states"],
+    ["united states of america", "united states"],
+    ["south korea", "korea republic"],
+    ["czechia", "czech republic"],
+    ["ivory coast", "cote divoire"],
+    ["côte d’ivoire", "cote divoire"],
+    ["côte d'ivoire", "cote divoire"],
+    ["dr congo", "democratic republic of the congo"],
+    ["congo dr", "democratic republic of the congo"],
+    ["curacao", "curaçao"]
+  ]);
+
+  return aliases.get(normalized) || normalized;
 }
 
 function createHttpError(statusCode, publicMessage, internalMessage) {

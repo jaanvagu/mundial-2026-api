@@ -22,6 +22,9 @@ ALLOWED_ORIGIN=https://culturarunner.com.co
 RATE_LIMIT_WINDOW_MS=60000
 RATE_LIMIT_MAX=60
 ALLOW_ALL_ORIGINS=false
+ESPN_ENABLED=true
+ESPN_SCOREBOARD_URL=https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard
+ESPN_WORLD_CUP_LEAGUE_UID_TOKEN=~l:606~
 TZ=America/Bogota
 ```
 
@@ -31,6 +34,7 @@ Notas:
 - En desarrollo, tambien se permiten `http://localhost:3000`, `http://localhost:5173` y `http://127.0.0.1:5500`.
 - `API_ACCESS_TOKEN` queda obsoleta y no se usa para bloquear endpoints publicos.
 - `ALLOW_ALL_ORIGINS=true` relaja temporalmente CORS y la validacion de `Origin`/`Referer` solo para debugging. Debe volver a `false` o eliminarse despues de probar.
+- ESPN es una fuente complementaria opcional para enriquecer marcador y reloj en vivo. Si falla, la API sigue respondiendo con las otras fuentes.
 
 ## Ejecutar localmente
 
@@ -103,8 +107,9 @@ curl https://api.culturarunner.com.co/api/results/finished
 
 - Prioridad principal: `https://worldcup26.ir/get/games`
 - Fallback: `https://wheniskickoff.com/data/v1/matches.json`
+- Fuente complementaria de reloj/marcador en vivo: `https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard`
 
-La API prioriza la fuente principal para `score`, `status` y `elapsed` cuando esos datos existen. Si falla o llega incompleta, completa el resultado desde la fuente secundaria.
+La API prioriza ESPN para `score`, `status` y `elapsed` cuando encuentra un partido coincidente del Mundial con datos confiables. Si ESPN no aplica o falla, conserva la informacion de `worldcup26` y `wheniskickoff`.
 
 ## Cache y fallback
 
