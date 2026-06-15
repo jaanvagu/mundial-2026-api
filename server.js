@@ -552,7 +552,7 @@ function normalizeEspnEvent(event, generatedAt) {
   const statusType = competitionStatus.type || {};
   const displayClock = firstString(competitionStatus.displayClock, statusType.shortDetail, statusType.detail);
   const parsedClock = parseEspnDisplayClock(displayClock);
-  const normalizedStatus = normalizeEspnStatus(statusType, displayClock);
+  const normalizedStatus = normalizeEspnStatus(statusType, displayClock, toNumberOrNull(competitionStatus.period));
   const elapsed = shouldUseEspnElapsed(normalizedStatus.status) ? (normalizedStatus.elapsedOverride != null ? normalizedStatus.elapsedOverride : parsedClock) : null;
   const estimatedElapsed = shouldUseEspnElapsed(normalizedStatus.status) && elapsed != null ? false : null;
 
@@ -920,11 +920,12 @@ function chooseScore(primaryValue, fallbackValue) {
   return null;
 }
 
-function normalizeEspnStatus(statusType, displayClock) {
+function normalizeEspnStatus(statusType, displayClock, period) {
   const state = firstString(statusType && statusType.state);
   const description = firstString(statusType && statusType.description, statusType && statusType.name, displayClock);
   const normalizedState = state ? state.toLowerCase() : "";
   const normalizedDescription = description ? description.toLowerCase() : "";
+  const normalizedClock = String(displayClock || "").toUpperCase();
 
   if (normalizedState === "pre" || normalizedDescription.includes("scheduled")) {
     return {
@@ -934,7 +935,25 @@ function normalizeEspnStatus(statusType, displayClock) {
     };
   }
 
-  if (normalizedDescription.includes("half") || String(displayClock || "").toUpperCase() === "HT") {
+  if (normalizedState === "in") {
+    if (normalizedClock === "HT" || normalizedDescription === "halftime" || normalizedDescription === "half time") {
+      return {
+        status: "HALFTIME",
+        elapsedOverride: 45,
+        estimated_elapsed: false
+      };
+    }
+
+    if (period === 1 || period === 2 || parseEspnDisplayClock(displayClock) != null) {
+      return {
+        status: "LIVE",
+        elapsedOverride: null,
+        estimated_elapsed: false
+      };
+    }
+  }
+
+  if (normalizedClock === "HT" || normalizedDescription === "halftime" || normalizedDescription === "half time") {
     return {
       status: "HALFTIME",
       elapsedOverride: 45,
@@ -942,15 +961,7 @@ function normalizeEspnStatus(statusType, displayClock) {
     };
   }
 
-  if (normalizedState === "in") {
-    return {
-      status: "LIVE",
-      elapsedOverride: null,
-      estimated_elapsed: false
-    };
-  }
-
-  if (normalizedState === "post" || statusType.completed || normalizedDescription.includes("final") || String(displayClock || "").toUpperCase() === "FT") {
+  if (normalizedState === "post" || statusType.completed || normalizedDescription.includes("final") || normalizedClock === "FT") {
     return {
       status: "FINISHED",
       elapsedOverride: 90,
