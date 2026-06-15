@@ -1241,6 +1241,12 @@ function applyTeamAlias(value) {
   return aliases.get(normalized) || normalized;
 }
 
+function teamTokenEquals(left, right) {
+  const leftToken = normalizeTeamToken(left);
+  const rightToken = normalizeTeamToken(right);
+  return Boolean(leftToken && rightToken && leftToken === rightToken);
+}
+
 function createHttpError(statusCode, publicMessage, internalMessage) {
   const error = new Error(internalMessage || publicMessage);
   error.statusCode = statusCode;
