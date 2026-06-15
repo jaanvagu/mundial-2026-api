@@ -1051,6 +1051,10 @@ function applyFinishedResultsCache(matches) {
       return match;
     }
 
+    if (!isCompatibleFinishedSnapshot(match, persisted)) {
+      return match;
+    }
+
     return {
       ...match,
       ...persisted,
@@ -1067,11 +1071,17 @@ function applyFinishedResultsCache(matches) {
 
 function findPersistedFinishedMatch(match) {
   if (match.id && finishedCacheState.byId.has(match.id)) {
-    return finishedCacheState.byId.get(match.id);
+    const candidate = finishedCacheState.byId.get(match.id);
+    if (isCompatibleFinishedSnapshot(match, candidate)) {
+      return candidate;
+    }
   }
 
   if (match.match_number != null && finishedCacheState.byMatchNumber.has(match.match_number)) {
-    return finishedCacheState.byMatchNumber.get(match.match_number);
+    const candidate = finishedCacheState.byMatchNumber.get(match.match_number);
+    if (isCompatibleFinishedSnapshot(match, candidate)) {
+      return candidate;
+    }
   }
 
   return null;
@@ -1141,6 +1151,10 @@ function persistFinishedMatches(matches) {
         continue;
       }
 
+      if (!isSafeToPersistFinished(match)) {
+        continue;
+      }
+
       const snapshot = createFinishedSnapshot(match);
       if (snapshot.id) {
         persisted.set(snapshot.id, snapshot);
@@ -1195,6 +1209,42 @@ function createFinishedSnapshot(match) {
     display_clock: match.display_clock ?? null,
     kickoff_utc: match.kickoff_utc ?? null
   };
+}
+
+function isCompatibleFinishedSnapshot(currentMatch, persistedMatch) {
+  if (!persistedMatch) {
+    return false;
+  }
+
+  if (currentMatch.id && persistedMatch.id && currentMatch.id !== persistedMatch.id) {
+    return false;
+  }
+
+  if (currentMatch.match_number != null && persistedMatch.match_number != null && currentMatch.match_number !== persistedMatch.match_number) {
+    return false;
+  }
+
+  if (!kickoffApproximatelyMatches(currentMatch.kickoff_utc, persistedMatch.kickoff_utc)) {
+    return false;
+  }
+
+  return matchesByTeamsOrCodes(currentMatch, persistedMatch) || matchesByTeamsOrCodes(currentMatch, persistedMatch, true);
+}
+
+function isSafeToPersistFinished(match) {
+  if (!match.id) {
+    return false;
+  }
+
+  if (!match.home_name || !match.away_name) {
+    return false;
+  }
+
+  if (match.score_home == null || match.score_away == null) {
+    return false;
+  }
+
+  return true;
 }
 
 function buildStableId(item, kickoffIso) {
@@ -1457,7 +1507,7 @@ function matchesByTeamsOrCodes(match, candidate, reversed = false) {
 
 function kickoffApproximatelyMatches(leftKickoff, rightKickoff) {
   const diff = getKickoffDifferenceMs(leftKickoff, rightKickoff);
-  return Number.isFinite(diff) && diff <= 12 * 60 * 60 * 1000;
+  return Number.isFinite(diff) && diff <= 60 * 60 * 1000;
 }
 
 function getKickoffDifferenceMs(leftKickoff, rightKickoff) {
