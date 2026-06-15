@@ -555,6 +555,7 @@ function normalizeEspnEvent(event, generatedAt) {
   const normalizedStatus = normalizeEspnStatus(statusType, displayClock, toNumberOrNull(competitionStatus.period));
   const elapsed = shouldUseEspnElapsed(normalizedStatus.status) ? (normalizedStatus.elapsedOverride != null ? normalizedStatus.elapsedOverride : parsedClock) : null;
   const estimatedElapsed = shouldUseEspnElapsed(normalizedStatus.status) && elapsed != null ? false : null;
+  const events = normalizeEspnEvents(competition && competition.details, competitors);
 
   return {
     espn_id: firstString(event.id, competition && competition.id),
@@ -567,13 +568,14 @@ function normalizeEspnEvent(event, generatedAt) {
     score_home: toNumberOrNull(home.score),
     score_away: toNumberOrNull(away.score),
     status: normalizedStatus.status,
-    status_raw: firstString(statusType.detail, statusType.description, statusType.name, competitionStatus.displayClock),
+    status_raw: getEspnStatusRaw(normalizedStatus.status, displayClock, statusType),
     elapsed,
     estimated_elapsed: estimatedElapsed,
-    display_clock: displayClock || null,
-    clock_source: "espn",
+    display_clock: shouldUseEspnElapsed(normalizedStatus.status) && displayClock !== "0'" ? displayClock || null : null,
+    clock_source: elapsed != null ? "espn" : null,
     period: toNumberOrNull(competitionStatus.period),
-    last_seen_at: generatedAt
+    last_seen_at: generatedAt,
+    events
   };
 }
 
@@ -825,7 +827,8 @@ function enrichMatchesWithEspn(matches, espnMatches, generatedAt) {
       last_seen_at: generatedAt,
       espn_id: espnMatch.espn_id || null,
       clock_source: hasUsableClock ? "espn" : match.clock_source,
-      display_clock: espnMatch.display_clock || match.display_clock || null
+      display_clock: hasUsableClock ? (espnMatch.display_clock || match.display_clock || null) : (match.display_clock || null),
+      events: espnMatch.events || match.events
     };
   });
 }
@@ -926,6 +929,7 @@ function normalizeEspnStatus(statusType, displayClock, period) {
   const normalizedState = state ? state.toLowerCase() : "";
   const normalizedDescription = description ? description.toLowerCase() : "";
   const normalizedClock = String(displayClock || "").toUpperCase();
+  const normalizedName = String(statusType && statusType.name ? statusType.name : "").toUpperCase();
 
   if (normalizedState === "pre" || normalizedDescription.includes("scheduled")) {
     return {
@@ -936,7 +940,7 @@ function normalizeEspnStatus(statusType, displayClock, period) {
   }
 
   if (normalizedState === "in") {
-    if (normalizedClock === "HT" || normalizedDescription === "halftime" || normalizedDescription === "half time") {
+    if (normalizedClock === "HT" || normalizedDescription.includes("half time")) {
       return {
         status: "HALFTIME",
         elapsedOverride: 45,
@@ -944,7 +948,13 @@ function normalizeEspnStatus(statusType, displayClock, period) {
       };
     }
 
-    if (period === 1 || period === 2 || parseEspnDisplayClock(displayClock) != null) {
+    if (
+      normalizedName === "STATUS_FIRST_HALF"
+      || normalizedName === "STATUS_SECOND_HALF"
+      || period === 1
+      || period === 2
+      || parseEspnDisplayClock(displayClock) != null
+    ) {
       return {
         status: "LIVE",
         elapsedOverride: null,
@@ -953,7 +963,7 @@ function normalizeEspnStatus(statusType, displayClock, period) {
     }
   }
 
-  if (normalizedClock === "HT" || normalizedDescription === "halftime" || normalizedDescription === "half time") {
+  if (normalizedClock === "HT" || normalizedDescription.includes("half time")) {
     return {
       status: "HALFTIME",
       elapsedOverride: 45,
@@ -986,7 +996,10 @@ function parseEspnDisplayClock(value) {
   }
 
   const compact = value.trim().toUpperCase();
-  if (compact === "HT") {
+  if (compact === "HT" || compact === "0'") {
+    if (compact === "0'") {
+      return null;
+    }
     return 45;
   }
 
@@ -1006,6 +1019,50 @@ function parseEspnDisplayClock(value) {
   }
 
   return null;
+}
+
+function getEspnStatusRaw(status, displayClock, statusType) {
+  if ((status === "LIVE" || status === "HALFTIME") && displayClock) {
+    return displayClock;
+  }
+
+  if (status === "FINISHED" && (displayClock === "FT" || String(displayClock || "").toUpperCase() === "FT")) {
+    return "FT";
+  }
+
+  return firstString(statusType && statusType.detail, statusType && statusType.description, statusType && statusType.name, displayClock);
+}
+
+function normalizeEspnEvents(details, competitors) {
+  if (!Array.isArray(details) || details.length === 0) {
+    return undefined;
+  }
+
+  const competitorsByTeamId = new Map(
+    (Array.isArray(competitors) ? competitors : [])
+      .filter((competitor) => competitor && competitor.team && competitor.team.id)
+      .map((competitor) => [String(competitor.team.id), competitor])
+  );
+
+  const events = details
+    .filter((detail) => detail && (detail.scoringPlay === true || firstString(detail.type && detail.type.text) === "Goal"))
+    .map((detail) => {
+      const athlete = Array.isArray(detail.athletesInvolved) ? detail.athletesInvolved[0] : null;
+      const competitor = detail.team && detail.team.id ? competitorsByTeamId.get(String(detail.team.id)) : null;
+
+      return {
+        type: "GOAL",
+        minute: firstString(detail.clock && detail.clock.displayValue),
+        team_code: firstString(competitor && competitor.team && competitor.team.abbreviation),
+        player: firstString(athlete && athlete.displayName),
+        short_player: firstString(athlete && athlete.shortName),
+        score_value: toNumberOrNull(detail.scoreValue),
+        penalty: detail.penaltyKick === true,
+        own_goal: detail.ownGoal === true
+      };
+    });
+
+  return events.length > 0 ? events : undefined;
 }
 
 function getRelevantEspnDates(matches, generatedAt) {
