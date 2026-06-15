@@ -931,6 +931,19 @@ function normalizeEspnStatus(statusType, displayClock, period) {
   const normalizedClock = String(displayClock || "").toUpperCase();
   const normalizedName = String(statusType && statusType.name ? statusType.name : "").toUpperCase();
 
+  if (
+    normalizedName === "STATUS_HALFTIME"
+    || normalizedClock === "HT"
+    || normalizedDescription === "halftime"
+    || normalizedDescription === "half time"
+  ) {
+    return {
+      status: "HALFTIME",
+      elapsedOverride: 45,
+      estimated_elapsed: false
+    };
+  }
+
   if (normalizedState === "pre" || normalizedDescription.includes("scheduled")) {
     return {
       status: "SCHEDULED",
@@ -940,14 +953,6 @@ function normalizeEspnStatus(statusType, displayClock, period) {
   }
 
   if (normalizedState === "in") {
-    if (normalizedClock === "HT" || normalizedDescription.includes("half time")) {
-      return {
-        status: "HALFTIME",
-        elapsedOverride: 45,
-        estimated_elapsed: false
-      };
-    }
-
     if (
       normalizedName === "STATUS_FIRST_HALF"
       || normalizedName === "STATUS_SECOND_HALF"
@@ -961,14 +966,6 @@ function normalizeEspnStatus(statusType, displayClock, period) {
         estimated_elapsed: false
       };
     }
-  }
-
-  if (normalizedClock === "HT" || normalizedDescription.includes("half time")) {
-    return {
-      status: "HALFTIME",
-      elapsedOverride: 45,
-      estimated_elapsed: false
-    };
   }
 
   if (normalizedState === "post" || statusType.completed || normalizedDescription.includes("final") || normalizedClock === "FT") {
