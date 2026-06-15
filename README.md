@@ -116,6 +116,7 @@ La API prioriza ESPN para `score`, `status` y `elapsed` cuando encuentra un part
 - Cache en memoria compartida por `CACHE_TTL_SECONDS`, default `40`
 - Evita refresh simultaneos con una promesa compartida
 - Intenta persistir el ultimo dato valido en `data/cache/results-cache.json`
+- Persiste partidos finalizados en `data/cache/finished-results.json` para congelar historicos y no re-resolverlos innecesariamente
 - Si ambas fuentes fallan y existe cache, responde el ultimo dato valido con `meta.cache_stale=true`
 - Si ambas fuentes fallan y no existe cache, responde `502`
 - Las fuentes gratuitas no tienen SLA, por lo que puede haber latencia, downtime o cambios de esquema
