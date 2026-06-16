@@ -1064,7 +1064,10 @@ function normalizeEspnEvents(details, competitors) {
 
 function getRelevantEspnDates(matches, generatedAt) {
   const nowMs = Date.parse(generatedAt);
-  const dates = new Set([formatUtcDateYYYYMMDD(nowMs)]);
+  const dates = new Set([
+    formatUtcDateYYYYMMDD(nowMs),
+    formatUtcDateYYYYMMDD(nowMs - 24 * 60 * 60 * 1000)
+  ]);
 
   for (const match of matches) {
     const kickoffMs = match.kickoff_utc ? Date.parse(match.kickoff_utc) : Number.NaN;
@@ -1075,6 +1078,7 @@ function getRelevantEspnDates(matches, generatedAt) {
     const diffMinutes = (nowMs - kickoffMs) / 60000;
     if (diffMinutes >= -15 && diffMinutes <= 140) {
       dates.add(formatUtcDateYYYYMMDD(kickoffMs));
+      dates.add(formatUtcDateYYYYMMDD(kickoffMs - 24 * 60 * 60 * 1000));
     }
   }
 
