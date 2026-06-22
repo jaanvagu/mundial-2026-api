@@ -740,9 +740,9 @@ function mergeSourceResults(primaryMatches, fallbackMatches, generatedAt) {
 
   for (const primary of primaryMatches) {
     const teamSignature = buildTeamSignature(primary);
-    const fallback = (teamSignature ? fallbackMapByTeams.get(teamSignature) : null)
+    const fallback = (primary.match_number != null ? fallbackMapByMatchNumber.get(primary.match_number) : null)
       || fallbackMapById.get(primary.id)
-      || (primary.match_number != null ? fallbackMapByMatchNumber.get(primary.match_number) : null);
+      || (teamSignature ? fallbackMapByTeams.get(teamSignature) : null);
     const resolved = mergeMatch(primary, fallback, generatedAt);
     merged.push(resolved);
     if (fallback) {
@@ -760,6 +760,10 @@ function mergeSourceResults(primaryMatches, fallbackMatches, generatedAt) {
 }
 
 function mergeMatch(primary, fallback, generatedAt) {
+  if (primary && fallback && !sameFixtureIdentity(primary, fallback)) {
+    return mergeMatch(null, fallback, generatedAt);
+  }
+
   const base = primary || fallback;
   const resolved = {
     id: coalesce(fallback && fallback.id, primary && primary.id, base.id),
@@ -1116,12 +1120,12 @@ function applyFinishedResultsCache(matches) {
     return {
       ...match,
       ...persisted,
-      id: persisted.id || match.id,
-      match_number: persisted.match_number != null ? persisted.match_number : match.match_number,
-      home_code: persisted.home_code || match.home_code,
-      away_code: persisted.away_code || match.away_code,
-      home_name: persisted.home_name || match.home_name,
-      away_name: persisted.away_name || match.away_name,
+      id: match.id,
+      match_number: match.match_number != null ? match.match_number : persisted.match_number,
+      home_code: match.home_code || persisted.home_code,
+      away_code: match.away_code || persisted.away_code,
+      home_name: match.home_name || persisted.home_name,
+      away_name: match.away_name || persisted.away_name,
       kickoff_utc: match.kickoff_utc || persisted.kickoff_utc || null
     };
   });
@@ -1202,7 +1206,13 @@ function getMatchCompletenessScore(match) {
 
 function persistFinishedMatches(matches) {
   try {
-    const persisted = new Map(finishedCacheState.byId);
+    const persisted = new Map();
+
+    for (const existing of finishedCacheState.byId.values()) {
+      if (isSafeToPersistFinished(existing)) {
+        persisted.set(existing.id, existing);
+      }
+    }
 
     for (const match of matches) {
       if (match.status !== "FINISHED") {
@@ -1215,7 +1225,10 @@ function persistFinishedMatches(matches) {
 
       const snapshot = createFinishedSnapshot(match);
       if (snapshot.id) {
-        persisted.set(snapshot.id, snapshot);
+        const current = persisted.get(snapshot.id);
+        if (!current || getFinishedSnapshotQuality(snapshot) >= getFinishedSnapshotQuality(current)) {
+          persisted.set(snapshot.id, snapshot);
+        }
       }
     }
 
@@ -1303,6 +1316,19 @@ function isSafeToPersistFinished(match) {
   }
 
   return true;
+}
+
+function getFinishedSnapshotQuality(match) {
+  let score = 0;
+
+  if (match.score_home != null && match.score_away != null) score += 5;
+  if (match.status === "FINISHED") score += 3;
+  if (match.espn_id) score += 2;
+  if (match.clock_source === "espn") score += 1;
+  if (match.home_code && match.away_code) score += 1;
+  if (match.home_name && match.away_name) score += 1;
+
+  return score;
 }
 
 function buildStableId(item, kickoffIso) {
@@ -1549,6 +1575,23 @@ function buildReversedCodeSignature(match) {
   }
 
   return `${home}__${away}`;
+}
+
+function sameFixtureIdentity(left, right) {
+  if (!left || !right) {
+    return true;
+  }
+
+  const sameCodes = teamTokenEquals(left.home_code, right.home_code) && teamTokenEquals(left.away_code, right.away_code);
+  const sameNames = teamTokenEquals(left.home_name, right.home_name) && teamTokenEquals(left.away_name, right.away_name);
+  const reversedCodes = teamTokenEquals(left.home_code, right.away_code) && teamTokenEquals(left.away_code, right.home_code);
+  const reversedNames = teamTokenEquals(left.home_name, right.away_name) && teamTokenEquals(left.away_name, right.home_name);
+
+  if (sameCodes || sameNames || reversedCodes || reversedNames) {
+    return true;
+  }
+
+  return false;
 }
 
 function matchesByTeamsOrCodes(match, candidate, reversed = false) {
