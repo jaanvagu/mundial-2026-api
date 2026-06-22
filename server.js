@@ -13,6 +13,7 @@ const FETCH_TIMEOUT_MS = Number(process.env.FETCH_TIMEOUT_MS) || 15000;
 const DEFAULT_ALLOWED_ORIGIN = "https://culturarunner.com.co";
 const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS) || 60000;
 const RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX) || 60;
+const BACKGROUND_REFRESH_MS = Number(process.env.BACKGROUND_REFRESH_MS) || 60000;
 const ALLOW_ALL_ORIGINS = String(process.env.ALLOW_ALL_ORIGINS).toLowerCase() === "true";
 const ESPN_ENABLED = process.env.ESPN_ENABLED !== "false";
 const ESPN_SCOREBOARD_URL = process.env.ESPN_SCOREBOARD_URL || "https://site.api.espn.com/apis/site/v2/sports/soccer/all/scoreboard";
@@ -115,6 +116,12 @@ app.listen(PORT, () => {
   } else {
     console.log("CORS restricted mode enabled.");
   }
+
+  setInterval(() => {
+    getResultsPayload().catch((error) => {
+      console.warn("Background refresh failed:", sanitizeUpstreamError(error));
+    });
+  }, BACKGROUND_REFRESH_MS);
 });
 
 function buildCorsOptions(req, callback) {
@@ -220,18 +227,38 @@ async function getResultsPayload() {
 
 async function refreshResults() {
   const generatedAt = new Date().toISOString();
-  const [worldcupSource, whenIsKickoffSource] = await Promise.all([
-    fetchWorldCup26(generatedAt),
-    fetchWhenIsKickoff(generatedAt)
+  const [whenIsKickoffSource, espnSource] = await Promise.all([
+    fetchWhenIsKickoff(generatedAt),
+    fetchEspnRelevantMatches([], generatedAt)
   ]);
 
-  const mergedResults = mergeSourceResults(worldcupSource.matches, whenIsKickoffSource.matches, generatedAt);
-  const frozenResults = applyFinishedResultsCache(mergedResults);
-  const espnSource = await fetchEspnRelevantMatches(
-    frozenResults.filter((match) => match.status !== "FINISHED"),
-    generatedAt
-  );
-  const enrichedResults = enrichMatchesWithEspn(frozenResults, espnSource.matches, generatedAt);
+  let worldcupSource = {
+    matches: [],
+    meta: {
+      ok: true,
+      count: 0,
+      error: null
+    }
+  };
+
+  let baseResults = whenIsKickoffSource.matches;
+
+  if (baseResults.length === 0 || !espnSource.meta.ok) {
+    worldcupSource = await fetchWorldCup26(generatedAt);
+  }
+
+  if (baseResults.length === 0) {
+    baseResults = worldcupSource.matches;
+  }
+
+  if ((!espnSource.meta.ok || espnSource.matches.length === 0) && worldcupSource.matches.length > 0) {
+    baseResults = mergeSourceResults(worldcupSource.matches, baseResults, generatedAt);
+  }
+
+  const frozenResults = applyFinishedResultsCache(baseResults);
+  const enrichedResults = espnSource.matches.length > 0
+    ? enrichMatchesWithEspn(frozenResults, espnSource.matches, generatedAt)
+    : frozenResults;
   const uniqueResults = dedupeMatches(enrichedResults);
   persistFinishedMatches(uniqueResults);
   const sourcesMeta = {
@@ -796,10 +823,6 @@ function enrichMatchesWithEspn(matches, espnMatches, generatedAt) {
   const usedEspnIds = new Set();
 
   return matches.map((match) => {
-    if (match.status === "FINISHED" && isPersistedFinishedMatch(match)) {
-      return match;
-    }
-
     const espnMatch = findMatchingEspnMatch(match, espnMatches, usedEspnIds);
     if (!espnMatch) {
       return match;
@@ -1069,8 +1092,9 @@ function normalizeEspnEvents(details, competitors) {
 function getRelevantEspnDates(matches, generatedAt) {
   const nowMs = Date.parse(generatedAt);
   const dates = new Set([
+    formatUtcDateYYYYMMDD(nowMs - 24 * 60 * 60 * 1000),
     formatUtcDateYYYYMMDD(nowMs),
-    formatUtcDateYYYYMMDD(nowMs - 24 * 60 * 60 * 1000)
+    formatUtcDateYYYYMMDD(nowMs + 24 * 60 * 60 * 1000)
   ]);
 
   for (const match of matches) {
@@ -1643,6 +1667,10 @@ function applyTeamAlias(value) {
   const aliases = new Map([
     ["usa", "united states"],
     ["united states of america", "united states"],
+    ["uru", "uruguay"],
+    ["ury", "uruguay"],
+    ["cpv", "cape verde"],
+    ["cape verde islands", "cape verde"],
     ["south korea", "korea republic"],
     ["czechia", "czech republic"],
     ["ivory coast", "cote divoire"],
