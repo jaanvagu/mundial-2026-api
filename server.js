@@ -845,6 +845,10 @@ function enrichMatchesWithEspn(matches, espnMatches, generatedAt) {
 
     return {
       ...match,
+      home_code: match.home_code || espnMatch.home_code || null,
+      away_code: match.away_code || espnMatch.away_code || null,
+      home_name: match.home_name || espnMatch.home_name || null,
+      away_name: match.away_name || espnMatch.away_name || null,
       score_home: hasUsableScores ? espnScoreHome : match.score_home,
       score_away: hasUsableScores ? espnScoreAway : match.score_away,
       status: authoritativeStatus ? espnMatch.status : match.status,
@@ -870,6 +874,10 @@ function findMatchingEspnMatch(match, espnMatches, usedEspnIds) {
       return false;
     }
 
+    if (matchHasUnknownTeams(match)) {
+      return true;
+    }
+
     const sameOrientation = matchesByTeamsOrCodes(match, espnMatch);
     const reversedOrientation = matchesByTeamsOrCodes(match, espnMatch, true);
     return sameOrientation || reversedOrientation;
@@ -886,6 +894,10 @@ function findMatchingEspnMatch(match, espnMatches, usedEspnIds) {
   });
 
   return candidates[0];
+}
+
+function matchHasUnknownTeams(match) {
+  return !firstString(match.home_code, match.home_name) || !firstString(match.away_code, match.away_name);
 }
 
 function getEspnOrientation(match, espnMatch) {
