@@ -20,6 +20,7 @@ const ESPN_SCOREBOARD_URL = process.env.ESPN_SCOREBOARD_URL || "https://site.api
 const ESPN_WORLD_CUP_LEAGUE_UID_TOKEN = process.env.ESPN_WORLD_CUP_LEAGUE_UID_TOKEN || "~l:606~";
 const CACHE_FILE_PATH = path.join(__dirname, "data", "cache", "results-cache.json");
 const FINISHED_RESULTS_FILE_PATH = path.join(__dirname, "data", "cache", "finished-results.json");
+const BRACKET_CACHE_FILE_PATH = path.join(__dirname, "data", "cache", "bracket-cache.json");
 const ALLOWED_DEV_ORIGINS = [
   "http://localhost:3000",
   "http://localhost:5173",
@@ -37,6 +38,12 @@ const PUBLIC_RESULTS_PATHS = [
 ];
 
 const cacheState = {
+  data: null,
+  updatedAt: null,
+  refreshPromise: null
+};
+
+const bracketCacheState = {
   data: null,
   updatedAt: null,
   refreshPromise: null
@@ -66,6 +73,7 @@ const resultsRateLimiter = rateLimit({
 
 loadPersistedCache();
 loadFinishedResultsCache();
+loadPersistedBracketCache();
 
 app.set("trust proxy", 1);
 app.use(express.json());
@@ -89,6 +97,7 @@ app.get("/api/health", (_req, res) => {
 app.get("/api/results", createResultsHandler(() => true));
 app.get("/api/results/live", createResultsHandler((match) => match.status === "LIVE" || match.status === "HALFTIME"));
 app.get("/api/results/finished", createResultsHandler((match) => match.status === "FINISHED"));
+app.get("/api/bracket", createBracketHandler);
 
 app.get("/api/matches", createResultsHandler(() => true));
 app.get("/api/matches/live", createResultsHandler((match) => match.status === "LIVE" || match.status === "HALFTIME"));
@@ -201,6 +210,19 @@ function createResultsHandler(filterFn) {
   };
 }
 
+async function createBracketHandler(_req, res) {
+  try {
+    const payload = await getBracketPayload();
+    res.json(payload);
+  } catch (error) {
+    const statusCode = error && error.statusCode ? error.statusCode : 500;
+    res.status(statusCode).json({
+      ok: false,
+      error: error && error.publicMessage ? error.publicMessage : "Unexpected error"
+    });
+  }
+}
+
 async function getResultsPayload() {
   const now = Date.now();
   const cacheAgeMs = cacheState.updatedAt ? now - cacheState.updatedAt : Number.POSITIVE_INFINITY;
@@ -223,6 +245,29 @@ async function getResultsPayload() {
     });
 
   return cacheState.refreshPromise;
+}
+
+function getBracketPayload() {
+  const now = Date.now();
+  const cacheAgeMs = bracketCacheState.updatedAt ? now - bracketCacheState.updatedAt : Number.POSITIVE_INFINITY;
+
+  if (bracketCacheState.data && cacheAgeMs < CACHE_TTL_SECONDS * 1000) {
+    return cloneBracketPayload(bracketCacheState.data, {
+      served_from_cache: true,
+      cache_stale: false
+    });
+  }
+
+  if (bracketCacheState.refreshPromise) {
+    return bracketCacheState.refreshPromise;
+  }
+
+  bracketCacheState.refreshPromise = refreshBracket()
+    .finally(() => {
+      bracketCacheState.refreshPromise = null;
+    });
+
+  return bracketCacheState.refreshPromise;
 }
 
 async function refreshResults() {
@@ -307,8 +352,22 @@ async function refreshResults() {
   cacheState.data = payload;
   cacheState.updatedAt = Date.now();
   persistCache(payload);
+  const bracketPayload = buildBracketPayload(uniqueResults, generatedAt);
+  bracketCacheState.data = bracketPayload;
+  bracketCacheState.updatedAt = Date.now();
+  persistBracketCache(bracketPayload);
 
   return payload;
+}
+
+async function refreshBracket() {
+  const resultsPayload = await getResultsPayload();
+  const generatedAt = new Date().toISOString();
+  const bracketPayload = buildBracketPayload(resultsPayload.results, generatedAt);
+  bracketCacheState.data = bracketPayload;
+  bracketCacheState.updatedAt = Date.now();
+  persistBracketCache(bracketPayload);
+  return bracketPayload;
 }
 
 async function fetchWorldCup26(generatedAt) {
@@ -1503,12 +1562,348 @@ function clonePayload(payload, overrides) {
   };
 }
 
+function cloneBracketPayload(payload, overrides) {
+  return {
+    meta: {
+      ...payload.meta,
+      ...overrides,
+      generated_at: overrides && overrides.generated_at ? overrides.generated_at : payload.meta.generated_at,
+      served_from_cache: overrides && Object.prototype.hasOwnProperty.call(overrides, "served_from_cache")
+        ? overrides.served_from_cache
+        : payload.meta.served_from_cache,
+      cache_stale: overrides && Object.prototype.hasOwnProperty.call(overrides, "cache_stale")
+        ? overrides.cache_stale
+        : payload.meta.cache_stale
+    },
+    stages: payload.stages.map((stage) => ({
+      ...stage,
+      matches: stage.matches.map((match) => ({ ...match }))
+    }))
+  };
+}
+
+function buildBracketPayload(results, generatedAt) {
+  const resultMap = new Map();
+  for (const match of Array.isArray(results) ? results : []) {
+    if (match && match.match_number != null) {
+      resultMap.set(match.match_number, match);
+    }
+  }
+
+  const nodeMap = new Map();
+  const stages = [
+    buildBracketStage("r32", "R32", [
+      { match_number: 76, label: "Brazil vs Japan" },
+      { match_number: 78, label: "Ivory Coast vs Norway" },
+      { match_number: 73, label: "South Africa vs Canada" },
+      { match_number: 74, label: "Germany vs Paraguay" },
+      { match_number: 75, label: "Netherlands vs Morocco" },
+      { match_number: 77, label: "France vs Sweden" },
+      { match_number: 79, label: "Mexico vs Ecuador" },
+      { match_number: 80, label: "England vs Congo DR" },
+      { match_number: 83, label: "Spain vs Austria" },
+      { match_number: 84, label: "Portugal vs Croatia" },
+      { match_number: 82, label: "Belgium vs Senegal" },
+      { match_number: 81, label: "United States vs Bosnia" },
+      { match_number: 88, label: "Australia vs Egypt" },
+      { match_number: 87, label: "Colombia vs Ghana" },
+      { match_number: 85, label: "Switzerland vs Algeria" },
+      { match_number: 86, label: "Argentina vs Cape Verde" }
+    ], resultMap, nodeMap),
+    buildBracketStage("r16", "R16", [
+      { match_number: 89, source_match_numbers: [76, 78] },
+      { match_number: 90, source_match_numbers: [73, 74] },
+      { match_number: 91, source_match_numbers: [75, 77] },
+      { match_number: 92, source_match_numbers: [79, 80] },
+      { match_number: 93, source_match_numbers: [83, 84] },
+      { match_number: 94, source_match_numbers: [82, 81] },
+      { match_number: 95, source_match_numbers: [88, 87] },
+      { match_number: 96, source_match_numbers: [85, 86] }
+    ], resultMap, nodeMap),
+    buildBracketStage("qf", "QF", [
+      { match_number: 97, source_match_numbers: [89, 90] },
+      { match_number: 98, source_match_numbers: [91, 92] },
+      { match_number: 99, source_match_numbers: [93, 94] },
+      { match_number: 100, source_match_numbers: [95, 96] }
+    ], resultMap, nodeMap),
+    buildBracketStage("sf", "SF", [
+      { match_number: 101, source_match_numbers: [97, 98] },
+      { match_number: 102, source_match_numbers: [99, 100] }
+    ], resultMap, nodeMap),
+    buildBracketStage("third", "3rd", [
+      { match_number: 103, source_match_numbers: [101, 102], placement: "THIRD_PLACE" }
+    ], resultMap, nodeMap),
+    buildBracketStage("final", "F", [
+      { match_number: 104, source_match_numbers: [101, 102], placement: "FINAL" }
+    ], resultMap, nodeMap)
+  ];
+
+  return {
+    meta: {
+      generated_at: generatedAt,
+      served_from_cache: false,
+      cache_updated_at: generatedAt,
+      cache_stale: false,
+      refresh_interval_seconds: CACHE_TTL_SECONDS
+    },
+    stages
+  };
+}
+
+function buildBracketStage(key, label, slots, resultMap, nodeMap) {
+  return {
+    key,
+    label,
+    matches: slots.map((slot, index) => {
+      const match = buildBracketMatch(slot, resultMap, index, nodeMap);
+      if (match.match_number != null) {
+        nodeMap.set(match.match_number, match);
+      }
+      return match;
+    })
+  };
+}
+
+function buildBracketMatch(slot, resultMap, orderIndex, nodeMap) {
+  const current = slot.match_number != null ? resultMap.get(slot.match_number) : null;
+  const sourceMatches = Array.isArray(slot.source_match_numbers)
+    ? slot.source_match_numbers.map((number) => resultMap.get(number) || (nodeMap && nodeMap.get(number)) || null).filter(Boolean)
+    : [];
+  const status = current ? normalizeStatus(current.status, "PENDING") : resolveBracketStatus(sourceMatches);
+  const winnerSide = current ? resolveWinnerSide(current) : resolveBracketWinnerSide(sourceMatches);
+  const participants = resolveBracketParticipants(current, sourceMatches, slot);
+  const winnerTeam = current ? resolveWinnerTeam(current, winnerSide) : resolveBracketWinnerTeam(sourceMatches, winnerSide);
+  const currentMatchNumber = slot.match_number != null
+    ? slot.match_number
+    : (current && current.match_number != null ? current.match_number : null);
+  const extraTime = current ? Boolean(current.extra_time || current.penalties) : resolveBracketExtraTime(sourceMatches);
+  const penalties = current ? Boolean(current.penalties) : resolveBracketPenalties(sourceMatches);
+  const penaltyScore = current ? extractPenaltyScore(current) : resolveBracketPenaltyScore(sourceMatches);
+
+  return {
+    id: slot.id || (current && current.id) || `M${currentMatchNumber || orderIndex + 1}`,
+    match_number: currentMatchNumber,
+    slot_index: orderIndex + 1,
+    source_match_numbers: slot.source_match_numbers || null,
+    placement: slot.placement || null,
+    home: participants.home,
+    away: participants.away,
+    score_home: current && current.score_home != null ? current.score_home : null,
+    score_away: current && current.score_away != null ? current.score_away : null,
+    status,
+    winner_side: winnerSide,
+    advance_home: winnerSide === "home",
+    advance_away: winnerSide === "away",
+    winner: winnerTeam,
+    extra_time: extraTime,
+    penalties,
+    penalty_score_home: penaltyScore.home,
+    penalty_score_away: penaltyScore.away,
+    penalty_winner: current && current.penalty_winner ? current.penalty_winner : inferPenaltyWinner(penaltyScore),
+    pending_sources: current ? [] : (slot.source_match_numbers || []).map((number) => `M${number}`),
+    next_match_number: resolveNextMatchNumber(currentMatchNumber)
+  };
+}
+
+function resolveBracketParticipants(current, sourceMatches, slot) {
+  if (current && current.home_name && current.away_name) {
+    return {
+      home: { code: current.home_code || null, name: current.home_name },
+      away: { code: current.away_code || null, name: current.away_name }
+    };
+  }
+
+  const homeSource = sourceMatches[0] || null;
+  const awaySource = sourceMatches[1] || null;
+  return {
+    home: resolveBracketParticipant(homeSource, "home", slot),
+    away: resolveBracketParticipant(awaySource, "away", slot)
+  };
+}
+
+function resolveBracketParticipant(match, side, slot) {
+  if (!match) {
+    return { code: null, name: null };
+  }
+
+  if (slot && slot.placement === "THIRD_PLACE") {
+    return resolveBracketLoserParticipant(match, side);
+  }
+
+  if (match.winner && match.winner.code) {
+    return { code: match.winner.code, name: match.winner.name || match.winner.code };
+  }
+
+  if (match.status === "FINISHED") {
+    const winnerSide = resolveWinnerSide(match);
+    if (winnerSide === "away") {
+      return { code: match.away_code || null, name: match.away_name || null };
+    }
+    return { code: match.home_code || null, name: match.home_name || null };
+  }
+
+  if (side === "away") {
+    return { code: match.away_code || null, name: match.away_name || match.away_code || null };
+  }
+
+  return { code: match.home_code || null, name: match.home_name || match.home_code || null };
+}
+
+function resolveBracketLoserParticipant(match, side) {
+  if (!match) {
+    return { code: null, name: null };
+  }
+
+  if (match.status === "FINISHED") {
+    const winnerSide = resolveWinnerSide(match);
+    if (winnerSide === "home") {
+      return { code: match.away_code || null, name: match.away_name || null };
+    }
+    if (winnerSide === "away") {
+      return { code: match.home_code || null, name: match.home_name || null };
+    }
+  }
+
+  if (side === "away") {
+    return { code: match.home_code || null, name: match.home_name || match.home_code || null };
+  }
+
+  return { code: match.away_code || null, name: match.away_name || match.away_code || null };
+}
+
+function resolveBracketStatus(sourceMatches) {
+  const matches = Array.isArray(sourceMatches) ? sourceMatches : [];
+  if (matches.some((match) => normalizeStatus(match.status, "PENDING") === "FINISHED")) {
+    return "FINISHED";
+  }
+  if (matches.some((match) => {
+    const status = normalizeStatus(match.status, "PENDING");
+    return status === "LIVE" || status === "HALFTIME";
+  })) {
+    return "LIVE";
+  }
+  return "PENDING";
+}
+
+function resolveBracketWinnerSide(sourceMatches) {
+  const current = Array.isArray(sourceMatches) ? sourceMatches.find((match) => resolveWinnerSide(match)) : null;
+  return current ? resolveWinnerSide(current) : null;
+}
+
+function resolveBracketWinnerTeam(sourceMatches, winnerSide) {
+  if (!winnerSide || !Array.isArray(sourceMatches)) {
+    return null;
+  }
+
+  const source = winnerSide === "away" ? (sourceMatches[1] || sourceMatches[0] || null) : (sourceMatches[0] || sourceMatches[1] || null);
+  if (!source) {
+    return null;
+  }
+
+  if (source.winner && source.winner.code) {
+    return { code: source.winner.code, name: source.winner.name || source.winner.code };
+  }
+
+  return winnerSide === "away"
+    ? { code: source.away_code || null, name: source.away_name || null }
+    : { code: source.home_code || null, name: source.home_name || null };
+}
+
+function resolveBracketExtraTime(sourceMatches) {
+  return Array.isArray(sourceMatches) ? sourceMatches.some((match) => Boolean(match && (match.extra_time || match.penalties))) : false;
+}
+
+function resolveBracketPenalties(sourceMatches) {
+  return Array.isArray(sourceMatches) ? sourceMatches.some((match) => Boolean(match && match.penalties)) : false;
+}
+
+function resolveBracketPenaltyScore(sourceMatches) {
+  const candidate = Array.isArray(sourceMatches) ? sourceMatches.find((match) => match && (match.penalty_score_home != null || match.penalty_score_away != null)) : null;
+  if (!candidate) {
+    return { home: null, away: null };
+  }
+  return {
+    home: candidate.penalty_score_home != null ? candidate.penalty_score_home : null,
+    away: candidate.penalty_score_away != null ? candidate.penalty_score_away : null
+  };
+}
+
+function resolveWinnerSide(match) {
+  if (!match) {
+    return null;
+  }
+
+  if (match.penalties && match.penalty_winner) {
+    return match.penalty_winner;
+  }
+
+  if (match.score_home == null || match.score_away == null) {
+    return null;
+  }
+
+  if (match.score_home > match.score_away) {
+    return "home";
+  }
+
+  if (match.score_away > match.score_home) {
+    return "away";
+  }
+
+  return null;
+}
+
+function resolveWinnerTeam(match, winnerSide) {
+  if (!match || !winnerSide) {
+    return null;
+  }
+
+  if (winnerSide === "home") {
+    return {
+      code: match.home_code || null,
+      name: match.home_name || null
+    };
+  }
+
+  if (winnerSide === "away") {
+    return {
+      code: match.away_code || null,
+      name: match.away_name || null
+    };
+  }
+
+  return null;
+}
+
+function resolveNextMatchNumber(matchNumber) {
+  if (matchNumber == null) {
+    return null;
+  }
+
+  const nextMap = {
+    M73: 90, M74: 90, M75: 91, M76: 89, M77: 91, M78: 89, M79: 92, M80: 92,
+    M81: 94, M82: 94, M83: 93, M84: 93, M85: 96, M86: 96, M87: 95, M88: 95,
+    M89: 97, M90: 97, M91: 98, M92: 98, M93: 99, M94: 99, M95: 100, M96: 100,
+    M97: 101, M98: 101, M99: 102, M100: 102, M101: 104, M102: 104
+  };
+
+  return nextMap[`M${matchNumber}`] || null;
+}
+
 function persistCache(payload) {
   try {
     fs.mkdirSync(path.dirname(CACHE_FILE_PATH), { recursive: true });
     fs.writeFileSync(CACHE_FILE_PATH, JSON.stringify(payload, null, 2), "utf8");
   } catch (error) {
     console.warn("Cache persistence skipped:", error.message);
+  }
+}
+
+function persistBracketCache(payload) {
+  try {
+    fs.mkdirSync(path.dirname(BRACKET_CACHE_FILE_PATH), { recursive: true });
+    fs.writeFileSync(BRACKET_CACHE_FILE_PATH, JSON.stringify(payload, null, 2), "utf8");
+  } catch (error) {
+    console.warn("Bracket cache persistence skipped:", error.message);
   }
 }
 
@@ -1529,6 +1924,26 @@ function loadPersistedCache() {
     }
   } catch (error) {
     console.warn("Unable to load persisted cache:", error.message);
+  }
+}
+
+function loadPersistedBracketCache() {
+  try {
+    if (!fs.existsSync(BRACKET_CACHE_FILE_PATH)) {
+      return;
+    }
+
+    const fileContents = fs.readFileSync(BRACKET_CACHE_FILE_PATH, "utf8");
+    const payload = JSON.parse(fileContents);
+
+    if (payload && payload.meta && Array.isArray(payload.stages)) {
+      bracketCacheState.data = payload;
+      bracketCacheState.updatedAt = payload.meta.cache_updated_at
+        ? Date.parse(payload.meta.cache_updated_at)
+        : Date.now();
+    }
+  } catch (error) {
+    console.warn("Unable to load persisted bracket cache:", error.message);
   }
 }
 
