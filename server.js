@@ -808,6 +808,7 @@ function normalizeEspnEvent(event, generatedAt) {
   const elapsed = shouldUseEspnElapsed(normalizedStatus.status) ? (normalizedStatus.elapsedOverride != null ? normalizedStatus.elapsedOverride : parsedClock) : null;
   const estimatedElapsed = shouldUseEspnElapsed(normalizedStatus.status) && elapsed != null ? false : null;
   const events = normalizeEspnEvents(competition && competition.details, competitors);
+  const extraTime = isEspnExtraTime(statusType);
 
   return {
     espn_id: firstString(event.id, competition && competition.id),
@@ -823,12 +824,23 @@ function normalizeEspnEvent(event, generatedAt) {
     status_raw: getEspnStatusRaw(normalizedStatus.status, displayClock, statusType),
     elapsed,
     estimated_elapsed: estimatedElapsed,
+    extra_time: extraTime,
     display_clock: shouldUseEspnElapsed(normalizedStatus.status) && displayClock !== "0'" ? displayClock || null : null,
     clock_source: elapsed != null ? "espn" : null,
     period: toNumberOrNull(competitionStatus.period),
     last_seen_at: generatedAt,
     events
   };
+}
+
+function isEspnExtraTime(statusType) {
+  return Boolean(
+    statusType
+    && (
+      statusType.name === "STATUS_OVERTIME"
+      || statusType.description === "Overtime"
+    )
+  );
 }
 
 function extractScores(item) {
