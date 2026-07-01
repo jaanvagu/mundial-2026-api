@@ -227,12 +227,12 @@ async function getResultsPayload() {
 
 async function refreshResults() {
   const generatedAt = new Date().toISOString();
-  const [whenIsKickoffSource, espnSource] = await Promise.all([
-    fetchWhenIsKickoff(generatedAt),
-    fetchEspnRelevantMatches([], generatedAt)
+  const [espnSource, worldcupSource] = await Promise.all([
+    fetchEspnRelevantMatches([], generatedAt),
+    fetchWorldCup26(generatedAt)
   ]);
 
-  let worldcupSource = {
+  let whenIsKickoffSource = {
     matches: [],
     meta: {
       ok: true,
@@ -241,18 +241,22 @@ async function refreshResults() {
     }
   };
 
-  let baseResults = whenIsKickoffSource.matches;
+  let baseResults = [];
 
-  if (baseResults.length === 0 || !espnSource.meta.ok) {
-    worldcupSource = await fetchWorldCup26(generatedAt);
-  }
-
-  if (baseResults.length === 0) {
-    baseResults = worldcupSource.matches;
-  }
-
-  if ((!espnSource.meta.ok || espnSource.matches.length === 0) && worldcupSource.matches.length > 0) {
-    baseResults = mergeSourceResults(worldcupSource.matches, baseResults, generatedAt);
+  if (espnSource.meta.ok && espnSource.matches.length > 0) {
+    baseResults = espnSource.matches;
+    if (worldcupSource.meta.ok && worldcupSource.matches.length > 0) {
+      baseResults = mergeSourceResults(baseResults, worldcupSource.matches, generatedAt);
+    }
+  } else {
+    if (worldcupSource.meta.ok && worldcupSource.matches.length > 0) {
+      baseResults = worldcupSource.matches;
+    } else {
+      whenIsKickoffSource = await fetchWhenIsKickoff(generatedAt);
+      if (whenIsKickoffSource.meta.ok && whenIsKickoffSource.matches.length > 0) {
+        baseResults = whenIsKickoffSource.matches;
+      }
+    }
   }
 
   const frozenResults = applyFinishedResultsCache(baseResults);
@@ -504,6 +508,8 @@ function normalizeWorldCupMatch(item, generatedAt) {
     away_name: firstString(item.away_name, item.awayTeam, item.away_team, item.team_away_name, item.away_team_name_en),
     score_home: scores.home,
     score_away: scores.away,
+    home_penalty_score: toNumberOrNull(item.home_penalty_score, item.home_penalties, item.home_penalty, item.penalty_score_home),
+    away_penalty_score: toNumberOrNull(item.away_penalty_score, item.away_penalties, item.away_penalty, item.penalty_score_away),
     status,
     status_raw: statusRaw || null,
     elapsed: explicitElapsed ?? estimated.elapsed,
@@ -539,6 +545,8 @@ function normalizeWhenIsKickoffMatch(item, generatedAt) {
     away_name: firstString(item.away_name),
     score_home: toNumberOrNull(item.score_home),
     score_away: toNumberOrNull(item.score_away),
+    home_penalty_score: toNumberOrNull(item.home_penalty_score, item.home_penalties, item.penalty_score_home),
+    away_penalty_score: toNumberOrNull(item.away_penalty_score, item.away_penalties, item.penalty_score_away),
     status,
     status_raw: statusRaw || null,
     elapsed: explicitElapsed ?? estimated.elapsed,
@@ -1153,10 +1161,15 @@ function applyFinishedResultsCache(matches) {
       return match;
     }
 
+    const currentQuality = getFinishedSnapshotQuality(match);
+    const persistedQuality = getFinishedSnapshotQuality(persisted);
+    const shouldPreferPersisted = persistedQuality >= currentQuality;
+    const preferred = shouldPreferPersisted ? persisted : match;
+
     return {
       ...match,
-      ...persisted,
-      id: match.id,
+      ...preferred,
+      id: match.id || persisted.id,
       match_number: match.match_number != null ? match.match_number : persisted.match_number,
       home_code: match.home_code || persisted.home_code,
       away_code: match.away_code || persisted.away_code,
@@ -1297,6 +1310,10 @@ function persistFinishedMatches(matches) {
 }
 
 function createFinishedSnapshot(match) {
+  const penalties = isPenaltyShootoutMatch(match);
+  const extraTime = isExtraTimeMatch(match) || penalties;
+  const penaltyScore = extractPenaltyScore(match);
+
   return {
     id: match.id,
     match_number: match.match_number ?? null,
@@ -1314,6 +1331,11 @@ function createFinishedSnapshot(match) {
     espn_id: match.espn_id ?? null,
     clock_source: match.clock_source ?? null,
     display_clock: match.display_clock ?? null,
+    extra_time: extraTime,
+    penalties,
+    penalty_score_home: penaltyScore.home,
+    penalty_score_away: penaltyScore.away,
+    penalty_winner: inferPenaltyWinner(penaltyScore),
     kickoff_utc: match.kickoff_utc ?? null
   };
 }
@@ -1333,6 +1355,10 @@ function isCompatibleFinishedSnapshot(currentMatch, persistedMatch) {
 
   if (!kickoffApproximatelyMatches(currentMatch.kickoff_utc, persistedMatch.kickoff_utc)) {
     return false;
+  }
+
+  if (!currentMatch.home_name && !currentMatch.away_name && !currentMatch.home_code && !currentMatch.away_code) {
+    return true;
   }
 
   return matchesByTeamsOrCodes(currentMatch, persistedMatch) || matchesByTeamsOrCodes(currentMatch, persistedMatch, true);
@@ -1361,10 +1387,52 @@ function getFinishedSnapshotQuality(match) {
   if (match.status === "FINISHED") score += 3;
   if (match.espn_id) score += 2;
   if (match.clock_source === "espn") score += 1;
+  if (match.extra_time) score += 1;
+  if (match.penalties) score += 1;
   if (match.home_code && match.away_code) score += 1;
   if (match.home_name && match.away_name) score += 1;
 
   return score;
+}
+
+function isExtraTimeMatch(match) {
+  const raw = String(match && match.status_raw ? match.status_raw : "").toUpperCase();
+  const displayClock = String(match && match.display_clock ? match.display_clock : "").toUpperCase();
+  return raw.includes("ET") || raw.includes("AET") || raw.includes("EXTRA") || raw.includes("PENS") || displayClock.includes("120");
+}
+
+function isPenaltyShootoutMatch(match) {
+  const raw = String(match && match.status_raw ? match.status_raw : "").toUpperCase();
+  return raw.includes("PENS") || raw.includes("PEN") || raw.includes("PENAL");
+}
+
+function extractPenaltyScore(match) {
+  return {
+    home: toNumberOrNull(
+      match && match.home_penalty_score,
+      match && match.penalty_score_home,
+      match && match.home_penalties,
+      match && match.penalties_home
+    ),
+    away: toNumberOrNull(
+      match && match.away_penalty_score,
+      match && match.penalty_score_away,
+      match && match.away_penalties,
+      match && match.penalties_away
+    )
+  };
+}
+
+function inferPenaltyWinner(penaltyScore) {
+  if (!penaltyScore || penaltyScore.home == null || penaltyScore.away == null) {
+    return null;
+  }
+
+  if (penaltyScore.home === penaltyScore.away) {
+    return null;
+  }
+
+  return penaltyScore.home > penaltyScore.away ? "home" : "away";
 }
 
 function buildStableId(item, kickoffIso) {
