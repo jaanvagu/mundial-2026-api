@@ -1366,6 +1366,11 @@ function toPublicMatch(match) {
 
   publicMatch.home_name = canonicalTeamName(publicMatch.home_name, publicMatch.home_code);
   publicMatch.away_name = canonicalTeamName(publicMatch.away_name, publicMatch.away_code);
+  publicMatch.extra_time = Boolean(publicMatch.extra_time);
+  publicMatch.penalties = Boolean(publicMatch.penalties);
+  publicMatch.penalty_score_home = publicMatch.penalty_score_home ?? null;
+  publicMatch.penalty_score_away = publicMatch.penalty_score_away ?? null;
+  publicMatch.penalty_winner = publicMatch.penalty_winner ?? null;
 
   return publicMatch;
 }
