@@ -702,9 +702,12 @@ function normalizeWorldCupMatch(item, generatedAt) {
     item.match_time
   );
   const scores = extractScores(item);
+  const homePenaltyScore = toNumberOrNull(item.home_penalty_score, item.home_penalties, item.home_penalty, item.penalty_score_home);
+  const awayPenaltyScore = toNumberOrNull(item.away_penalty_score, item.away_penalties, item.away_penalty, item.penalty_score_away);
   const estimated = estimateMatchProgress(kickoff, generatedAt, explicitElapsed, statusRaw);
   const status = normalizeStatus(statusRaw, estimated.status);
   const stableId = buildStableId(item, kickoff);
+  const penalties = Boolean(homePenaltyScore != null || awayPenaltyScore != null || String(statusRaw || "").toUpperCase().includes("PENS"));
 
   return {
     id: stableId,
@@ -715,8 +718,10 @@ function normalizeWorldCupMatch(item, generatedAt) {
     away_name: canonicalTeamName(firstString(item.away_name, item.awayTeam, item.away_team, item.team_away_name, item.away_team_name_en), firstString(item.away_code, item.away_team_code, item.away_short)),
     score_home: scores.home,
     score_away: scores.away,
-    home_penalty_score: toNumberOrNull(item.home_penalty_score, item.home_penalties, item.home_penalty, item.penalty_score_home),
-    away_penalty_score: toNumberOrNull(item.away_penalty_score, item.away_penalties, item.away_penalty, item.penalty_score_away),
+    home_penalty_score: homePenaltyScore,
+    away_penalty_score: awayPenaltyScore,
+    penalties,
+    extra_time: Boolean(penalties || String(statusRaw || "").toUpperCase().includes("ET") || String(statusRaw || "").toUpperCase().includes("AET")),
     status,
     status_raw: statusRaw || null,
     elapsed: explicitElapsed ?? estimated.elapsed,
@@ -739,9 +744,12 @@ function normalizeWhenIsKickoffMatch(item, generatedAt) {
     item.minute,
     item.match_time
   );
+  const homePenaltyScore = toNumberOrNull(item.home_penalty_score, item.home_penalties, item.penalty_score_home);
+  const awayPenaltyScore = toNumberOrNull(item.away_penalty_score, item.away_penalties, item.penalty_score_away);
   const estimated = estimateMatchProgress(kickoff, generatedAt, explicitElapsed, statusRaw);
   const status = normalizeStatus(statusRaw, estimated.status);
   const stableId = buildStableId(item, kickoff);
+  const penalties = Boolean(homePenaltyScore != null || awayPenaltyScore != null || String(statusRaw || "").toUpperCase().includes("PENS"));
 
   return {
     id: stableId,
@@ -752,8 +760,10 @@ function normalizeWhenIsKickoffMatch(item, generatedAt) {
     away_name: canonicalTeamName(firstString(item.away_name), firstString(item.away_code)),
     score_home: toNumberOrNull(item.score_home),
     score_away: toNumberOrNull(item.score_away),
-    home_penalty_score: toNumberOrNull(item.home_penalty_score, item.home_penalties, item.penalty_score_home),
-    away_penalty_score: toNumberOrNull(item.away_penalty_score, item.away_penalties, item.penalty_score_away),
+    home_penalty_score: homePenaltyScore,
+    away_penalty_score: awayPenaltyScore,
+    penalties,
+    extra_time: Boolean(penalties || String(statusRaw || "").toUpperCase().includes("ET") || String(statusRaw || "").toUpperCase().includes("AET")),
     status,
     status_raw: statusRaw || null,
     elapsed: explicitElapsed ?? estimated.elapsed,
@@ -1026,7 +1036,11 @@ function mergeMatch(primary, fallback, generatedAt) {
     penalties: Boolean((primary && primary.penalties) || (fallback && fallback.penalties)),
     penalty_score_home: chooseScore(primary && primary.penalty_score_home, fallback && fallback.penalty_score_home),
     penalty_score_away: chooseScore(primary && primary.penalty_score_away, fallback && fallback.penalty_score_away),
-    penalty_winner: coalesce(primary && primary.penalty_winner, fallback && fallback.penalty_winner)
+    penalty_winner: coalesce(primary && primary.penalty_winner, fallback && fallback.penalty_winner),
+    home_penalty_score: chooseScore(primary && primary.home_penalty_score, fallback && fallback.home_penalty_score),
+    away_penalty_score: chooseScore(primary && primary.away_penalty_score, fallback && fallback.away_penalty_score),
+    home_penalties: chooseScore(primary && primary.home_penalties, fallback && fallback.home_penalties),
+    away_penalties: chooseScore(primary && primary.away_penalties, fallback && fallback.away_penalties)
   };
 
   if (!resolved.status) {
@@ -1368,8 +1382,8 @@ function toPublicMatch(match) {
   publicMatch.away_name = canonicalTeamName(publicMatch.away_name, publicMatch.away_code);
   publicMatch.extra_time = Boolean(publicMatch.extra_time);
   publicMatch.penalties = Boolean(publicMatch.penalties);
-  publicMatch.penalty_score_home = publicMatch.penalty_score_home ?? null;
-  publicMatch.penalty_score_away = publicMatch.penalty_score_away ?? null;
+  publicMatch.penalty_score_home = publicMatch.penalty_score_home ?? publicMatch.home_penalty_score ?? null;
+  publicMatch.penalty_score_away = publicMatch.penalty_score_away ?? publicMatch.away_penalty_score ?? null;
   publicMatch.penalty_winner = publicMatch.penalty_winner ?? null;
 
   return publicMatch;
@@ -1535,8 +1549,8 @@ function persistFinishedMatches(matches) {
 }
 
 function createFinishedSnapshot(match) {
-  const penalties = isPenaltyShootoutMatch(match);
-  const extraTime = isExtraTimeMatch(match) || penalties;
+  const penalties = isPenaltyShootoutMatch(match) || Boolean(match.penalties) || match.home_penalty_score != null || match.away_penalty_score != null;
+  const extraTime = isExtraTimeMatch(match) || penalties || Boolean(match.extra_time);
   const penaltyScore = extractPenaltyScore(match);
   const homeName = canonicalTeamName(match.home_name, match.home_code);
   const awayName = canonicalTeamName(match.away_name, match.away_code);
@@ -2089,10 +2103,22 @@ function loadPersistedCache() {
       cacheState.updatedAt = payload.meta.cache_updated_at
         ? Date.parse(payload.meta.cache_updated_at)
         : Date.now();
+      if (cacheNeedsPenaltyRebuild(payload.results)) {
+        cacheState.updatedAt = null;
+      }
     }
   } catch (error) {
     console.warn("Unable to load persisted cache:", error.message);
   }
+}
+
+function cacheNeedsPenaltyRebuild(results) {
+  return Array.isArray(results) && results.some((match) => {
+    if (!match || match.status !== "FINISHED") {
+      return false;
+    }
+    return Boolean(match.match_number != null && (match.penalties == null || match.penalty_score_home == null || match.penalty_score_away == null));
+  });
 }
 
 function loadPersistedBracketCache() {
