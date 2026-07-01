@@ -1021,7 +1021,12 @@ function mergeMatch(primary, fallback, generatedAt) {
     elapsed: chooseElapsed(primary, fallback),
     estimated_elapsed: chooseEstimatedElapsed(primary, fallback),
     last_seen_at: generatedAt,
-    kickoff_utc: coalesce(fallback && fallback.kickoff_utc, primary && primary.kickoff_utc)
+    kickoff_utc: coalesce(fallback && fallback.kickoff_utc, primary && primary.kickoff_utc),
+    extra_time: Boolean((primary && primary.extra_time) || (fallback && fallback.extra_time)),
+    penalties: Boolean((primary && primary.penalties) || (fallback && fallback.penalties)),
+    penalty_score_home: chooseScore(primary && primary.penalty_score_home, fallback && fallback.penalty_score_home),
+    penalty_score_away: chooseScore(primary && primary.penalty_score_away, fallback && fallback.penalty_score_away),
+    penalty_winner: coalesce(primary && primary.penalty_winner, fallback && fallback.penalty_winner)
   };
 
   if (!resolved.status) {
@@ -1074,7 +1079,12 @@ function enrichMatchesWithEspn(matches, espnMatches, generatedAt) {
       espn_id: espnMatch.espn_id || null,
       clock_source: hasUsableClock ? "espn" : match.clock_source,
       display_clock: hasUsableClock ? (espnMatch.display_clock || match.display_clock || null) : (match.display_clock || null),
-      events: espnMatch.events || match.events
+      events: espnMatch.events || match.events,
+      extra_time: Boolean(match.extra_time || espnMatch.extra_time),
+      penalties: Boolean(match.penalties || espnMatch.penalties),
+      penalty_score_home: match.penalty_score_home != null ? match.penalty_score_home : espnMatch.penalty_score_home ?? null,
+      penalty_score_away: match.penalty_score_away != null ? match.penalty_score_away : espnMatch.penalty_score_away ?? null,
+      penalty_winner: match.penalty_winner || espnMatch.penalty_winner || null
     };
   });
 }
