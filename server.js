@@ -1780,32 +1780,32 @@ function buildBracketPayload(results, generatedAt) {
   const nodeMap = new Map();
   const stages = [
     buildBracketStage("r32", "R32", [
+      { match_number: 74, label: "Germany vs Paraguay" },
+      { match_number: 77, label: "France vs Sweden" },
+      { match_number: 73, label: "South Africa vs Canada" },
+      { match_number: 75, label: "Netherlands vs Morocco" },
       { match_number: 76, label: "Brazil vs Japan" },
       { match_number: 78, label: "Ivory Coast vs Norway" },
-      { match_number: 73, label: "South Africa vs Canada" },
-      { match_number: 74, label: "Germany vs Paraguay" },
-      { match_number: 75, label: "Netherlands vs Morocco" },
-      { match_number: 77, label: "France vs Sweden" },
       { match_number: 79, label: "Mexico vs Ecuador" },
       { match_number: 80, label: "England vs Congo DR" },
       { match_number: 83, label: "Spain vs Austria" },
       { match_number: 84, label: "Portugal vs Croatia" },
-      { match_number: 82, label: "Belgium vs Senegal" },
       { match_number: 81, label: "United States vs Bosnia" },
+      { match_number: 82, label: "Belgium vs Senegal" },
+      { match_number: 86, label: "Argentina vs Cape Verde" },
       { match_number: 88, label: "Australia vs Egypt" },
-      { match_number: 87, label: "Colombia vs Ghana" },
       { match_number: 85, label: "Switzerland vs Algeria" },
-      { match_number: 86, label: "Argentina vs Cape Verde" }
+      { match_number: 87, label: "Colombia vs Ghana" }
     ], resultMap, nodeMap),
     buildBracketStage("r16", "R16", [
-      { match_number: 89, source_match_numbers: [76, 78] },
-      { match_number: 90, source_match_numbers: [73, 74] },
-      { match_number: 91, source_match_numbers: [75, 77] },
+      { match_number: 89, source_match_numbers: [74, 77] },
+      { match_number: 90, source_match_numbers: [73, 75] },
+      { match_number: 91, source_match_numbers: [76, 78] },
       { match_number: 92, source_match_numbers: [79, 80] },
       { match_number: 93, source_match_numbers: [83, 84] },
-      { match_number: 94, source_match_numbers: [82, 81] },
-      { match_number: 95, source_match_numbers: [88, 87] },
-      { match_number: 96, source_match_numbers: [85, 86] }
+      { match_number: 94, source_match_numbers: [81, 82] },
+      { match_number: 95, source_match_numbers: [86, 88] },
+      { match_number: 96, source_match_numbers: [85, 87] }
     ], resultMap, nodeMap),
     buildBracketStage("qf", "QF", [
       { match_number: 97, source_match_numbers: [89, 90] },
@@ -1856,16 +1856,28 @@ function buildBracketMatch(slot, resultMap, orderIndex, nodeMap) {
   const sourceMatches = Array.isArray(slot.source_match_numbers)
     ? slot.source_match_numbers.map((number) => resultMap.get(number) || (nodeMap && nodeMap.get(number)) || null).filter(Boolean)
     : [];
-  const status = current ? normalizeStatus(current.status, "PENDING") : resolveBracketStatus(sourceMatches);
-  const winnerSide = current ? resolveWinnerSide(current) : resolveBracketWinnerSide(sourceMatches);
-  const participants = resolveBracketParticipants(current, sourceMatches, slot);
-  const winnerTeam = current ? resolveWinnerTeam(current, winnerSide) : resolveBracketWinnerTeam(sourceMatches, winnerSide);
+  const currentStatus = current ? normalizeStatus(current.status, "PENDING") : "PENDING";
+  const sourceResolution = resolveBracketSourceResolution(sourceMatches, slot);
+  const status = currentStatus === "FINISHED" || currentStatus === "LIVE" || currentStatus === "HALFTIME"
+    ? currentStatus
+    : sourceResolution.status;
+  const winnerSide = currentStatus === "FINISHED" ? resolveWinnerSide(current) : null;
+  const participants = currentStatus === "FINISHED"
+    ? resolveBracketParticipants(current, sourceResolution, slot)
+    : sourceResolution.participants;
+  const winnerTeam = currentStatus === "FINISHED" ? resolveWinnerTeam(current, winnerSide) : null;
   const currentMatchNumber = slot.match_number != null
     ? slot.match_number
     : (current && current.match_number != null ? current.match_number : null);
-  const extraTime = current ? Boolean(current.extra_time || current.penalties) : resolveBracketExtraTime(sourceMatches);
-  const penalties = current ? Boolean(current.penalties) : resolveBracketPenalties(sourceMatches);
-  const penaltyScore = current ? extractPenaltyScore(current) : resolveBracketPenaltyScore(sourceMatches);
+  const extraTime = currentStatus === "FINISHED" || currentStatus === "LIVE" || currentStatus === "HALFTIME"
+    ? Boolean(current && (current.extra_time || current.penalties))
+    : false;
+  const penalties = currentStatus === "FINISHED"
+    ? Boolean(current && current.penalties)
+    : false;
+  const penaltyScore = currentStatus === "FINISHED"
+    ? extractPenaltyScore(current)
+    : { home: null, away: null };
 
   return {
     id: slot.id || (current && current.id) || `M${currentMatchNumber || orderIndex + 1}`,
@@ -1875,8 +1887,12 @@ function buildBracketMatch(slot, resultMap, orderIndex, nodeMap) {
     placement: slot.placement || null,
     home: participants.home,
     away: participants.away,
-    score_home: current && current.score_home != null ? current.score_home : null,
-    score_away: current && current.score_away != null ? current.score_away : null,
+    score_home: currentStatus === "FINISHED" || currentStatus === "LIVE" || currentStatus === "HALFTIME"
+      ? (current && current.score_home != null ? current.score_home : null)
+      : null,
+    score_away: currentStatus === "FINISHED" || currentStatus === "LIVE" || currentStatus === "HALFTIME"
+      ? (current && current.score_away != null ? current.score_away : null)
+      : null,
     status,
     winner_side: winnerSide,
     advance_home: winnerSide === "home",
@@ -1886,22 +1902,24 @@ function buildBracketMatch(slot, resultMap, orderIndex, nodeMap) {
     penalties,
     penalty_score_home: penaltyScore.home,
     penalty_score_away: penaltyScore.away,
-    penalty_winner: current && current.penalty_winner ? current.penalty_winner : inferPenaltyWinner(penaltyScore),
-    pending_sources: current ? [] : (slot.source_match_numbers || []).map((number) => `M${number}`),
+    penalty_winner: currentStatus === "FINISHED"
+      ? (current && current.penalty_winner ? current.penalty_winner : inferPenaltyWinner(penaltyScore))
+      : null,
+    pending_sources: sourceResolution.pending_sources,
     next_match_number: resolveNextMatchNumber(currentMatchNumber)
   };
 }
 
-function resolveBracketParticipants(current, sourceMatches, slot) {
-  if (current && current.home_name && current.away_name) {
+function resolveBracketParticipants(current, sourceResolution, slot) {
+  if (current && normalizeStatus(current.status, "PENDING") === "FINISHED" && current.home_name && current.away_name) {
     return {
       home: { code: current.home_code || null, name: canonicalTeamName(current.home_name, current.home_code) },
       away: { code: current.away_code || null, name: canonicalTeamName(current.away_name, current.away_code) }
     };
   }
 
-  const homeSource = sourceMatches[0] || null;
-  const awaySource = sourceMatches[1] || null;
+  const homeSource = sourceResolution.home || null;
+  const awaySource = sourceResolution.away || null;
   return {
     home: resolveBracketParticipant(homeSource, "home", slot),
     away: resolveBracketParticipant(awaySource, "away", slot)
@@ -1958,61 +1976,65 @@ function resolveBracketLoserParticipant(match, side) {
   return { code: match.away_code || null, name: canonicalTeamName(match.away_name, match.away_code) };
 }
 
-function resolveBracketStatus(sourceMatches) {
+function resolveBracketSourceResolution(sourceMatches, slot) {
   const matches = Array.isArray(sourceMatches) ? sourceMatches : [];
-  if (matches.some((match) => normalizeStatus(match.status, "PENDING") === "FINISHED")) {
-    return "FINISHED";
-  }
-  if (matches.some((match) => {
-    const status = normalizeStatus(match.status, "PENDING");
-    return status === "LIVE" || status === "HALFTIME";
-  })) {
-    return "LIVE";
-  }
-  return "PENDING";
-}
+  const pendingSources = Array.isArray(slot && slot.source_match_numbers) ? slot.source_match_numbers.slice() : [];
 
-function resolveBracketWinnerSide(sourceMatches) {
-  const current = Array.isArray(sourceMatches) ? sourceMatches.find((match) => resolveWinnerSide(match)) : null;
-  return current ? resolveWinnerSide(current) : null;
-}
-
-function resolveBracketWinnerTeam(sourceMatches, winnerSide) {
-  if (!winnerSide || !Array.isArray(sourceMatches)) {
-    return null;
+  if (matches.length < 2) {
+    return {
+      status: "PENDING",
+      participants: { home: { code: null, name: null }, away: { code: null, name: null } },
+      pending_sources: pendingSources
+    };
   }
 
-  const source = winnerSide === "away" ? (sourceMatches[1] || sourceMatches[0] || null) : (sourceMatches[0] || sourceMatches[1] || null);
-  if (!source) {
-    return null;
+  const first = matches[0];
+  const second = matches[1];
+  const firstFinished = normalizeStatus(first.status, "PENDING") === "FINISHED";
+  const secondFinished = normalizeStatus(second.status, "PENDING") === "FINISHED";
+
+  if (!firstFinished || !secondFinished) {
+    return {
+      status: "PENDING",
+      participants: { home: { code: null, name: null }, away: { code: null, name: null } },
+      pending_sources: pendingSources
+    };
   }
 
-  if (source.winner && source.winner.code) {
-    return { code: source.winner.code, name: source.winner.name || source.winner.code };
-  }
-
-  return winnerSide === "away"
-    ? { code: source.away_code || null, name: source.away_name || null }
-    : { code: source.home_code || null, name: source.home_name || null };
-}
-
-function resolveBracketExtraTime(sourceMatches) {
-  return Array.isArray(sourceMatches) ? sourceMatches.some((match) => Boolean(match && (match.extra_time || match.penalties))) : false;
-}
-
-function resolveBracketPenalties(sourceMatches) {
-  return Array.isArray(sourceMatches) ? sourceMatches.some((match) => Boolean(match && match.penalties)) : false;
-}
-
-function resolveBracketPenaltyScore(sourceMatches) {
-  const candidate = Array.isArray(sourceMatches) ? sourceMatches.find((match) => match && (match.penalty_score_home != null || match.penalty_score_away != null)) : null;
-  if (!candidate) {
-    return { home: null, away: null };
-  }
+  const home = slot && slot.placement === "THIRD_PLACE"
+    ? resolveBracketLoserParticipant(first, "home")
+    : resolveBracketWinnerParticipant(first, "home");
+  const away = slot && slot.placement === "THIRD_PLACE"
+    ? resolveBracketLoserParticipant(second, "away")
+    : resolveBracketWinnerParticipant(second, "away");
   return {
-    home: candidate.penalty_score_home != null ? candidate.penalty_score_home : null,
-    away: candidate.penalty_score_away != null ? candidate.penalty_score_away : null
+    status: "SCHEDULED",
+    participants: { home, away },
+    pending_sources: []
   };
+}
+
+function resolveBracketWinnerParticipant(match, side) {
+  if (!match) {
+    return { code: null, name: null };
+  }
+
+  if (normalizeStatus(match.status, "PENDING") !== "FINISHED") {
+    return { code: null, name: null };
+  }
+
+  const winnerSide = resolveWinnerSide(match);
+  if (winnerSide === "away") {
+    return { code: match.away_code || null, name: canonicalTeamName(match.away_name, match.away_code) };
+  }
+
+  if (winnerSide === "home") {
+    return { code: match.home_code || null, name: canonicalTeamName(match.home_name, match.home_code) };
+  }
+
+  return side === "away"
+    ? { code: match.away_code || null, name: canonicalTeamName(match.away_name, match.away_code) }
+    : { code: match.home_code || null, name: canonicalTeamName(match.home_name, match.home_code) };
 }
 
 function resolveWinnerSide(match) {
