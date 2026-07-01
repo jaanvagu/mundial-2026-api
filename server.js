@@ -1842,7 +1842,7 @@ function buildBracketStage(key, label, slots, resultMap, nodeMap) {
     key,
     label,
     matches: slots.map((slot, index) => {
-      const match = buildBracketMatch(slot, resultMap, index, nodeMap);
+      const match = buildBracketMatch(key, slot, resultMap, index, nodeMap);
       if (match.match_number != null) {
         nodeMap.set(match.match_number, match);
       }
@@ -1851,20 +1851,25 @@ function buildBracketStage(key, label, slots, resultMap, nodeMap) {
   };
 }
 
-function buildBracketMatch(slot, resultMap, orderIndex, nodeMap) {
+function buildBracketMatch(stageKey, slot, resultMap, orderIndex, nodeMap) {
   const current = slot.match_number != null ? resultMap.get(slot.match_number) : null;
+  const isR32 = stageKey === "r32";
   const sourceMatches = Array.isArray(slot.source_match_numbers)
     ? slot.source_match_numbers.map((number) => resultMap.get(number) || (nodeMap && nodeMap.get(number)) || null).filter(Boolean)
     : [];
   const currentStatus = current ? normalizeStatus(current.status, "PENDING") : "PENDING";
   const sourceResolution = resolveBracketSourceResolution(sourceMatches, slot);
-  const status = currentStatus === "FINISHED" || currentStatus === "LIVE" || currentStatus === "HALFTIME"
-    ? currentStatus
-    : sourceResolution.status;
+  const status = isR32
+    ? (currentStatus === "UNKNOWN" ? "SCHEDULED" : currentStatus)
+    : (currentStatus === "FINISHED" || currentStatus === "LIVE" || currentStatus === "HALFTIME"
+      ? currentStatus
+      : sourceResolution.status);
   const winnerSide = currentStatus === "FINISHED" ? resolveWinnerSide(current) : null;
-  const participants = currentStatus === "FINISHED"
-    ? resolveBracketParticipants(current, sourceResolution, slot)
-    : sourceResolution.participants;
+  const participants = isR32
+    ? resolveR32Participants(current, slot)
+    : (currentStatus === "FINISHED"
+      ? resolveBracketParticipants(current, sourceResolution, slot)
+      : sourceResolution.participants);
   const winnerTeam = currentStatus === "FINISHED" ? resolveWinnerTeam(current, winnerSide) : null;
   const currentMatchNumber = slot.match_number != null
     ? slot.match_number
@@ -1887,19 +1892,27 @@ function buildBracketMatch(slot, resultMap, orderIndex, nodeMap) {
     placement: slot.placement || null,
     home: participants.home,
     away: participants.away,
-    score_home: currentStatus === "FINISHED" || currentStatus === "LIVE" || currentStatus === "HALFTIME"
+    score_home: isR32
+      ? (currentStatus === "FINISHED" || currentStatus === "LIVE" || currentStatus === "HALFTIME"
+        ? (current && current.score_home != null ? current.score_home : null)
+        : null)
+      : (currentStatus === "FINISHED" || currentStatus === "LIVE" || currentStatus === "HALFTIME"
       ? (current && current.score_home != null ? current.score_home : null)
-      : null,
-    score_away: currentStatus === "FINISHED" || currentStatus === "LIVE" || currentStatus === "HALFTIME"
+      : null),
+    score_away: isR32
+      ? (currentStatus === "FINISHED" || currentStatus === "LIVE" || currentStatus === "HALFTIME"
+        ? (current && current.score_away != null ? current.score_away : null)
+        : null)
+      : (currentStatus === "FINISHED" || currentStatus === "LIVE" || currentStatus === "HALFTIME"
       ? (current && current.score_away != null ? current.score_away : null)
-      : null,
+      : null),
     status,
     winner_side: winnerSide,
     advance_home: winnerSide === "home",
     advance_away: winnerSide === "away",
     winner: winnerTeam,
-    extra_time: extraTime,
-    penalties,
+    extra_time: isR32 ? Boolean(current && current.extra_time) : extraTime,
+    penalties: isR32 ? Boolean(current && current.penalties) : penalties,
     penalty_score_home: penaltyScore.home,
     penalty_score_away: penaltyScore.away,
     penalty_winner: currentStatus === "FINISHED"
@@ -1907,6 +1920,43 @@ function buildBracketMatch(slot, resultMap, orderIndex, nodeMap) {
       : null,
     pending_sources: sourceResolution.pending_sources,
     next_match_number: resolveNextMatchNumber(currentMatchNumber)
+  };
+}
+
+function resolveR32Participants(current, slot) {
+  if (current && current.home_name && current.away_name) {
+    return {
+      home: { code: current.home_code || null, name: canonicalTeamName(current.home_name, current.home_code) },
+      away: { code: current.away_code || null, name: canonicalTeamName(current.away_name, current.away_code) }
+    };
+  }
+
+  const parsed = parseTeamsFromSlotLabel(slot && slot.label);
+  return {
+    home: parsed.home,
+    away: parsed.away
+  };
+}
+
+function parseTeamsFromSlotLabel(label) {
+  if (!label || typeof label !== "string") {
+    return {
+      home: { code: null, name: null },
+      away: { code: null, name: null }
+    };
+  }
+
+  const parts = label.split(/\s+vs\s+/i);
+  if (parts.length !== 2) {
+    return {
+      home: { code: null, name: null },
+      away: { code: null, name: null }
+    };
+  }
+
+  return {
+    home: { code: null, name: canonicalTeamName(parts[0].trim(), null) },
+    away: { code: null, name: canonicalTeamName(parts[1].trim(), null) }
   };
 }
 
