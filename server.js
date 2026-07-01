@@ -1384,7 +1384,12 @@ function toPublicMatch(match) {
   publicMatch.penalties = Boolean(publicMatch.penalties);
   publicMatch.penalty_score_home = publicMatch.penalty_score_home ?? publicMatch.home_penalty_score ?? null;
   publicMatch.penalty_score_away = publicMatch.penalty_score_away ?? publicMatch.away_penalty_score ?? null;
-  publicMatch.penalty_winner = publicMatch.penalty_winner ?? null;
+  publicMatch.penalty_winner = publicMatch.penalty_winner ?? inferPenaltyWinner({
+    home: publicMatch.penalty_score_home,
+    away: publicMatch.penalty_score_away
+  });
+  publicMatch.home_penalties = publicMatch.home_penalties ?? publicMatch.penalty_score_home ?? null;
+  publicMatch.away_penalties = publicMatch.away_penalties ?? publicMatch.penalty_score_away ?? null;
 
   return publicMatch;
 }
