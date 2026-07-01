@@ -37,6 +37,85 @@ const PUBLIC_RESULTS_PATHS = [
   "/api/matches/finished"
 ];
 
+const TEAM_CANONICAL_NAMES = {
+  BRA: "Brazil",
+  JAP: "Japan",
+  CIV: "Ivory Coast",
+  NOR: "Norway",
+  ZAF: "South Africa",
+  CAN: "Canada",
+  GER: "Germany",
+  PAR: "Paraguay",
+  NED: "Netherlands",
+  MAR: "Morocco",
+  FRA: "France",
+  SWE: "Sweden",
+  MEX: "Mexico",
+  ECU: "Ecuador",
+  ENG: "England",
+  COD: "Congo DR",
+  ESP: "Spain",
+  AUT: "Austria",
+  POR: "Portugal",
+  CRO: "Croatia",
+  BEL: "Belgium",
+  SEN: "Senegal",
+  USA: "United States",
+  BIH: "Bosnia",
+  AUS: "Australia",
+  EGY: "Egypt",
+  COL: "Colombia",
+  GHA: "Ghana",
+  SUI: "Switzerland",
+  ALG: "Algeria",
+  ARG: "Argentina",
+  CPV: "Cape Verde",
+  EGI: "Egypt",
+  IRN: "Iran",
+  NZL: "New Zealand"
+};
+
+const TEAM_CANONICAL_NAMES_BY_ALIAS = {
+  brazil: "Brazil",
+  japan: "Japan",
+  "ivory coast": "Ivory Coast",
+  "cote divoire": "Ivory Coast",
+  norway: "Norway",
+  "south africa": "South Africa",
+  canada: "Canada",
+  germany: "Germany",
+  paraguay: "Paraguay",
+  netherlands: "Netherlands",
+  morocco: "Morocco",
+  france: "France",
+  sweden: "Sweden",
+  mexico: "Mexico",
+  ecuador: "Ecuador",
+  england: "England",
+  "congo dr": "Congo DR",
+  "democratic republic of the congo": "Congo DR",
+  spain: "Spain",
+  austria: "Austria",
+  portugal: "Portugal",
+  croatia: "Croatia",
+  belgium: "Belgium",
+  senegal: "Senegal",
+  "united states": "United States",
+  bosnia: "Bosnia",
+  "bosnia and herzegovina": "Bosnia",
+  australia: "Australia",
+  egypt: "Egypt",
+  colombia: "Colombia",
+  ghana: "Ghana",
+  switzerland: "Switzerland",
+  algeria: "Algeria",
+  argentina: "Argentina",
+  "cape verde": "Cape Verde",
+  "cape verde islands": "Cape Verde",
+  iran: "Iran",
+  "new zealand": "New Zealand"
+};
+
 const cacheState = {
   data: null,
   updatedAt: null,
@@ -1206,6 +1285,9 @@ function toPublicMatch(match) {
     ...publicMatch
   } = match;
 
+  publicMatch.home_name = canonicalTeamName(publicMatch.home_name, publicMatch.home_code);
+  publicMatch.away_name = canonicalTeamName(publicMatch.away_name, publicMatch.away_code);
+
   return publicMatch;
 }
 
@@ -1232,8 +1314,8 @@ function applyFinishedResultsCache(matches) {
       match_number: match.match_number != null ? match.match_number : persisted.match_number,
       home_code: match.home_code || persisted.home_code,
       away_code: match.away_code || persisted.away_code,
-      home_name: match.home_name || persisted.home_name,
-      away_name: match.away_name || persisted.away_name,
+      home_name: canonicalTeamName(match.home_name || persisted.home_name, match.home_code || persisted.home_code),
+      away_name: canonicalTeamName(match.away_name || persisted.away_name, match.away_code || persisted.away_code),
       kickoff_utc: match.kickoff_utc || persisted.kickoff_utc || null
     };
   });
@@ -1372,14 +1454,16 @@ function createFinishedSnapshot(match) {
   const penalties = isPenaltyShootoutMatch(match);
   const extraTime = isExtraTimeMatch(match) || penalties;
   const penaltyScore = extractPenaltyScore(match);
+  const homeName = canonicalTeamName(match.home_name, match.home_code);
+  const awayName = canonicalTeamName(match.away_name, match.away_code);
 
   return {
     id: match.id,
     match_number: match.match_number ?? null,
     home_code: match.home_code ?? null,
     away_code: match.away_code ?? null,
-    home_name: match.home_name ?? null,
-    away_name: match.away_name ?? null,
+    home_name: homeName,
+    away_name: awayName,
     score_home: match.score_home ?? null,
     score_away: match.score_away ?? null,
     status: match.status,
@@ -1708,8 +1792,8 @@ function buildBracketMatch(slot, resultMap, orderIndex, nodeMap) {
 function resolveBracketParticipants(current, sourceMatches, slot) {
   if (current && current.home_name && current.away_name) {
     return {
-      home: { code: current.home_code || null, name: current.home_name },
-      away: { code: current.away_code || null, name: current.away_name }
+      home: { code: current.home_code || null, name: canonicalTeamName(current.home_name, current.home_code) },
+      away: { code: current.away_code || null, name: canonicalTeamName(current.away_name, current.away_code) }
     };
   }
 
@@ -1731,22 +1815,22 @@ function resolveBracketParticipant(match, side, slot) {
   }
 
   if (match.winner && match.winner.code) {
-    return { code: match.winner.code, name: match.winner.name || match.winner.code };
+    return { code: match.winner.code, name: canonicalTeamName(match.winner.name, match.winner.code) };
   }
 
   if (match.status === "FINISHED") {
     const winnerSide = resolveWinnerSide(match);
     if (winnerSide === "away") {
-      return { code: match.away_code || null, name: match.away_name || null };
+      return { code: match.away_code || null, name: canonicalTeamName(match.away_name, match.away_code) };
     }
-    return { code: match.home_code || null, name: match.home_name || null };
+    return { code: match.home_code || null, name: canonicalTeamName(match.home_name, match.home_code) };
   }
 
   if (side === "away") {
-    return { code: match.away_code || null, name: match.away_name || match.away_code || null };
+    return { code: match.away_code || null, name: canonicalTeamName(match.away_name, match.away_code) };
   }
 
-  return { code: match.home_code || null, name: match.home_name || match.home_code || null };
+  return { code: match.home_code || null, name: canonicalTeamName(match.home_name, match.home_code) };
 }
 
 function resolveBracketLoserParticipant(match, side) {
@@ -1757,18 +1841,18 @@ function resolveBracketLoserParticipant(match, side) {
   if (match.status === "FINISHED") {
     const winnerSide = resolveWinnerSide(match);
     if (winnerSide === "home") {
-      return { code: match.away_code || null, name: match.away_name || null };
+      return { code: match.away_code || null, name: canonicalTeamName(match.away_name, match.away_code) };
     }
     if (winnerSide === "away") {
-      return { code: match.home_code || null, name: match.home_name || null };
+      return { code: match.home_code || null, name: canonicalTeamName(match.home_name, match.home_code) };
     }
   }
 
   if (side === "away") {
-    return { code: match.home_code || null, name: match.home_name || match.home_code || null };
+    return { code: match.home_code || null, name: canonicalTeamName(match.home_name, match.home_code) };
   }
 
-  return { code: match.away_code || null, name: match.away_name || match.away_code || null };
+  return { code: match.away_code || null, name: canonicalTeamName(match.away_name, match.away_code) };
 }
 
 function resolveBracketStatus(sourceMatches) {
@@ -2177,6 +2261,34 @@ function applyTeamAlias(value) {
   ]);
 
   return aliases.get(normalized) || normalized;
+}
+
+function canonicalTeamName(name, code) {
+  const normalizedCode = String(code || "").trim().toUpperCase();
+  if (TEAM_CANONICAL_NAMES[normalizedCode]) {
+    return TEAM_CANONICAL_NAMES[normalizedCode];
+  }
+
+  const normalizedAlias = normalizeTeamAliasKey(name);
+  if (normalizedAlias && TEAM_CANONICAL_NAMES_BY_ALIAS[normalizedAlias]) {
+    return TEAM_CANONICAL_NAMES_BY_ALIAS[normalizedAlias];
+  }
+
+  return firstString(name) || null;
+}
+
+function normalizeTeamAliasKey(value) {
+  if (!value || typeof value !== "string") {
+    return "";
+  }
+
+  return value
+    .trim()
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
 }
 
 function teamTokenEquals(left, right) {
